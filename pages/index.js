@@ -550,7 +550,7 @@ export default function App() {
   async function runOpenings(pl,ch){
     if(procRef.current)return;
     procRef.current=true;setThinking(true);
-    const ais=[...pl.filter(p=>!p.isHuman&&p.alive)].sort(()=>Math.random()-.5).slice(0,3);
+    const ais=[...pl.filter(p=>!p.isHuman&&p.alive)].sort(()=>Math.random()-.5).slice(0,2);
     for(let i=0;i<ais.length;i++){
       await wait(700+Math.random()*900);
       const ai=ais[i];
@@ -578,14 +578,14 @@ export default function App() {
       const named=aiAlive.filter(ai=>trigger.text.includes(ai.name));
       const hasQ=/[？?]|役職|占い師|霊媒師|騎士|みんな|全員|誰か/.test(trigger.text);
       const rest=[...aiAlive.filter(ai=>!named.some(n=>n.id===ai.id))].sort(()=>Math.random()-.5);
-      speakers=[...named,...rest.slice(0,hasQ?2:1)];
+      speakers=[...named.slice(0,1),...rest.slice(0,1)];
       if(!speakers.length)speakers=rest.slice(0,2);
     } else if(trigger){
       const named=aiAlive.filter(ai=>trigger.text.includes(ai.name)&&ai.name!==trigger.sender);
       const rest=[...aiAlive.filter(ai=>ai.name!==trigger.sender&&!named.some(n=>n.id===ai.id))].sort(()=>Math.random()-.5);
       speakers=[...named.slice(0,1),...rest.slice(0,1)];
     } else {
-      speakers=[...aiAlive].sort(()=>Math.random()-.5).slice(0,2+Math.floor(Math.random()*2));
+      speakers=[...aiAlive].sort(()=>Math.random()-.5).slice(0,1);
     }
 
     for(let i=0;i<speakers.length;i++){
