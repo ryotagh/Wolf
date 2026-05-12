@@ -24,36 +24,129 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
 // ─────────────────────────────────────────────────────────────
 // GEMINI
 // ─────────────────────────────────────────────────────────────
-async function gemini(prompt) {
-  try {
-    const key = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
-    if (!key) return null;
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${key}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { maxOutputTokens: 500, temperature: 1.1, topP: 0.97, topK: 50 },
-          safetySettings: [
-            { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
-            { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
-          ],
-        }),
-      }
-    );
-    if (!res.ok) return null;
-    const data = await res.json();
-    let text = data.candidates?.[0]?.content?.parts?.[0]?.text || null;
-    if (!text) return null;
-    text = text.replace(/^[\s「」『』""''\n]+|[\s「」『』""''\n]+$/g, "").trim();
-    // 最大2文に
+// リトライ付きGemini呼び出し（429時は待機して再試行）
+async function gemini(prompt, retries = 3) {
+  const key = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
+  if (!key) return null;
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      if (attempt > 0) await wait(4000 * attempt); // 429後は待機
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${key}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { maxOutputTokens: 400, temperature: 1.0, topP: 0.95 },
+            safetySettings: [
+              { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+              { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+            ],
+          }),
+        }
+      );
+      if (res.status === 429) continue; // レート制限 → リトライ
+      if (!res.ok) return null;
+      const data = await res.json();
+      let text = data.candidates?.[0]?.content?.parts?.[0]?.text || null;
+      if (!text) return null;
+      text = text.replace(/^[\s「」『』""''\n]+|[\s「」『』""''\n]+$/g, "").trim();
+      if (text.length > 250) text = text.slice(0, 250) + "。";
+      return text || null;
+    } catch { return null; }
+  }
+  return null;
+}
 
+// 1回のAPIで複数AIの発言をまとめて生成（リクエスト節約）
+async function geminiMulti(speakers, allPlayers, chatLog, day, trigger) {
+  if (!speakers.length) return [];
+  const key = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
+  if (!key) return [];
 
-    if (text.length > 250) text = text.slice(0, 250) + "。";
-    return text || null;
-  } catch { return null; }
+  const alive = allPlayers.filter(p => p.alive);
+  const dead = allPlayers.filter(p => !p.alive);
+  const log = chatLog.filter(m => m.type !== "gm").slice(-8)
+    .map(m => `${m.sender}「${m.text}」`).join("\n");
+  const triggerLine = trigger ? `直前の発言：${trigger.sender}「${trigger.text}」` : "";
+
+  // 全員の情報をコンパクトにまとめる
+  const speakerInfos = speakers.map(sp => {
+    const isWolf = ["WEREWOLF","MADMAN"].includes(sp.role);
+    const wolfAllies = isWolf && sp.memory?.wolfAllies?.length
+      ? `（仲間の人狼：${sp.memory.wolfAllies.join("、")}）` : "";
+    const seerInfo = sp.role === "SEER" && sp.memory?.seerResults?.length
+      ? `占い結果：${sp.memory.seerResults.map(r=>`${r.name}→${r.result}`).join("、")}` : "";
+    const suspects = Object.entries(sp.memory?.suspects||{}).filter(([,v])=>v>=5).map(([n])=>n).join("、")||"なし";
+    const pastSaid = (sp.memory?.said||[]).slice(-3).join(" / ") || "なし";
+    const roleGoal = isWolf
+      ? `人狼。村人のふりをして${wolfAllies}村人陣営を処刑に誘導する。嘘をつく。`
+      : sp.role === "SEER" ? `占い師。${seerInfo}。適切なタイミングでCOして情報を共有する。`
+      : `${sp.memory?.role || sp.role}（村人陣営）。人狼を見つけて処刑に誘導する。`;
+    return `【${sp.name}】役割：${roleGoal} 性格：${sp.personality} 疑っている人：${suspects} 過去発言：${pastSaid}`;
+  }).join("\n");
+
+  const prompt = `あなたは人狼ゲームのGMです。以下のプレイヤーそれぞれが、今この状況でどう発言するか生成してください。
+
+ゲーム状況：${day}日目の昼
+生存者：${alive.map(p=>p.name).join("、")}
+死亡者：${dead.length?dead.map(p=>p.name).join("、"):"なし"}
+${triggerLine}
+
+直近の会話：
+${log || "（まだなし）"}
+
+各プレイヤーの情報：
+${speakerInfos}
+
+【出力形式】必ず以下の形式で各プレイヤーの発言を出力してください。他の文字は一切不要。
+${speakers.map(sp => `${sp.name}：（発言内容）`).join("\n")}
+
+【発言のルール】
+- 直前の会話・質問に必ず反応する（無視禁止）
+- 具体的な名前と根拠を含める（抽象的な発言禁止）
+- 役職の目標に沿った戦略的な発言
+- 1〜2文の自然な日本語
+- 各自の性格に合わせた話し方
+- 過去発言と矛盾しない`;
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      if (attempt > 0) await wait(4000 * attempt);
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${key}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { maxOutputTokens: 600, temperature: 1.0, topP: 0.95 },
+            safetySettings: [
+              { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+              { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+            ],
+          }),
+        }
+      );
+      if (res.status === 429) continue;
+      if (!res.ok) return [];
+      const data = await res.json();
+      const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      // 各プレイヤーの発言を抽出
+      return speakers.map(sp => {
+        const regex = new RegExp(`${sp.name}[：:」]([^\n]+)`);
+        const match = raw.match(regex);
+        let text = match ? match[1].trim() : null;
+        if (text) {
+          text = text.replace(/^[「」]+|[「」]+$/g, "").trim();
+          if (text.length > 250) text = text.slice(0, 250) + "。";
+        }
+        return { speaker: sp, text };
+      });
+    } catch { return []; }
+  }
+  return [];
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -587,58 +680,67 @@ export default function App() {
     if(!aiAlive.length){setThinking(false);procRef.current=false;return;}
 
     // 発言者選定
-    let speakers=[];
+    let speakerList=[];
     if(trigger&&fromHuman){
-      // 人間発言：名指しAIは必須、全体質問は2〜3人反応
       const named=aiAlive.filter(ai=>trigger.text.includes(ai.name));
       const hasQ=/[？?]|役職|占い師|霊媒師|騎士|みんな|全員|誰か/.test(trigger.text);
       const rest=[...aiAlive.filter(ai=>!named.some(n=>n.id===ai.id))].sort(()=>Math.random()-.5);
-      speakers=[...named,...rest.slice(0,2)];
-      if(!speakers.length)speakers=rest.slice(0,2);
+      speakerList=[...named,...rest.slice(0,hasQ?2:1)];
+      if(!speakerList.length)speakerList=rest.slice(0,2);
     } else if(trigger){
       const named=aiAlive.filter(ai=>trigger.text.includes(ai.name)&&ai.name!==trigger.sender);
       const rest=[...aiAlive.filter(ai=>ai.name!==trigger.sender&&!named.some(n=>n.id===ai.id))].sort(()=>Math.random()-.5);
-      speakers=[...named,...rest.slice(0,2)];
+      speakerList=[...named.slice(0,1),...rest.slice(0,1)];
     } else {
-      speakers=[...aiAlive].sort(()=>Math.random()-.5).slice(0,1+Math.floor(Math.random()*2));
+      speakerList=[...aiAlive].sort(()=>Math.random()-.5).slice(0,1+Math.floor(Math.random()*2));
     }
 
-    for(let i=0;i<speakers.length;i++){
-      await wait(2000+Math.random()*2000);
-      if(phRef.current!==PHASES.DAY)break;
-      const base=plRef.current.find(p=>p.id===speakers[i].id);
+    // 占い師が結果を持っている場合は個別処理
+    let seerHandled = false;
+    for(const sp of speakerList){
+      const base=plRef.current.find(p=>p.id===sp.id);
       if(!base||!base.alive)continue;
-
-      let text="";let isSeer=false;
-
-      // 占い師が未発表の結果を持っている
       if(base.role==="SEER"&&dayRef.current>=2){
         const results=base.memory?.seerResults||[];
         const published=base.memory?.said?.join("")||"";
-        const unpub=results.filter(r=>!published.includes(r.name+"を占い"));
+        const unpub=results.filter(r=>!published.includes(r.name));
         if(unpub.length&&Math.random()>0.4){
           const r=unpub[unpub.length-1];
-          const pr=makePrompt(base,plRef.current,ch,dayRef.current,trigger)+
-            `\n今、占い師としてCOして「${r.name}を占った結果${r.result}だった」という情報を自然に公開する発言（1〜2文）：`;
-          text=await gemini(pr)||`占い師としてCOします。昨夜${r.name}さんを占いました。結果は${r.result}でした。`;
-          isSeer=true;
-          const updPl=plRef.current.map(p=>p.id===base.id?{...p,memory:{...p.memory,claimedRole:"SEER"}}:p);
+          const text=await gemini(
+            `占い師として「${r.name}を昨夜占いました。結果は${r.result}でした」という情報を、今のゲーム状況（${day}日目）で自然にCOする発言を1〜2文で生成してください。直前の会話：${ch.filter(m=>m.type!=="gm").slice(-3).map(m=>m.sender+"「"+m.text+"」").join(" ")}`
+          )||`占い師としてCOします。昨夜${r.name}さんを占いました。結果は${r.result}でした。`;
+          await wait(1500);
+          if(phRef.current!==PHASES.DAY)break;
+          const updPl=plRef.current.map(p=>p.id===base.id?{...p,memory:{...p.memory,claimedRole:"SEER",said:[...(p.memory.said||[]),text]}}:p);
           setPlayers(updPl);plRef.current=updPl;
+          const m=mk({type:"ai",sender:base.name,text,isHuman:false,isSeer:true});
+          setChat(prev=>[...prev,m]);ch=[...ch,m];chRef.current=ch;
+          speakerList=speakerList.filter(s=>s.id!==sp.id);
+          seerHandled=true;
+          break;
         }
       }
+    }
 
-      if(!text){
-        const pr=makePrompt(base,plRef.current,ch,dayRef.current,trigger);
-        text=await gemini(pr)||fallback(base,plRef.current,trigger);
-      }
+    if(!speakerList.length){setThinking(false);procRef.current=false;return;}
+
+    // 残りのスピーカーを1回のAPIでまとめて生成（リクエスト節約）
+    await wait(1000);
+    if(phRef.current!==PHASES.DAY){setThinking(false);procRef.current=false;return;}
+
+    const currentSpeakers=speakerList.map(sp=>plRef.current.find(p=>p.id===sp.id)).filter(p=>p&&p.alive);
+    const results=await geminiMulti(currentSpeakers,plRef.current,ch,dayRef.current,trigger);
+
+    for(let i=0;i<results.length;i++){
+      if(phRef.current!==PHASES.DAY)break;
+      const {speaker:base,text:rawText}=results[i];
+      const text=rawText||fallback(base,plRef.current,trigger);
 
       // メモリ更新
       let mem={...base.memory};
       mem.said=[...(mem.said||[]),text];
-      // COの検出
       if(text.includes("占い師")&&(text.includes("です")||text.includes("として"))){mem.claimedRole="SEER";}
       if(text.includes("霊媒師")&&(text.includes("です")||text.includes("として"))){mem.claimedRole="MEDIUM";}
-      // 疑い・信頼の更新
       plRef.current.filter(p=>p.alive&&p.id!==base.id).forEach(p=>{
         if(text.includes(p.name)){
           if(/怪し|疑|人狼じゃ|処刑|偽/.test(text)){
@@ -653,8 +755,9 @@ export default function App() {
       const updPl=plRef.current.map(p=>p.id===base.id?{...p,memory:mem}:p);
       setPlayers(updPl);plRef.current=updPl;
 
-      const m=mk({type:"ai",sender:base.name,text,isHuman:false,isSeer});
+      const m=mk({type:"ai",sender:base.name,text,isHuman:false,isSeer:false});
       setChat(prev=>[...prev,m]);ch=[...ch,m];chRef.current=ch;
+      if(i<results.length-1) await wait(1500+Math.random()*1000);
     }
     setThinking(false);procRef.current=false;
   }
