@@ -35,7 +35,7 @@ async function gemini(prompt) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { maxOutputTokens: 200, temperature: 1.1, topP: 0.97, topK: 50 },
+          generationConfig: { maxOutputTokens: 300, temperature: 1.1, topP: 0.97, topK: 50 },
           safetySettings: [
             { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
             { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
@@ -50,8 +50,8 @@ async function gemini(prompt) {
     text = text.replace(/^[\s「」『』""''\n]+|[\s「」『』""''\n]+$/g, "").trim();
     // 最大2文に
     const parts = text.split(/(?<=[。！？])/);
-    if (parts.length > 2) text = parts.slice(0,2).join("");
-    if (text.length > 140) text = text.slice(0, 140) + "…";
+    if (parts.length > 3) text = parts.slice(0,3).join("");
+    if (text.length > 200) text = text.slice(0, 200) + "…";
     return text || null;
   } catch { return null; }
 }
@@ -512,7 +512,7 @@ export default function App() {
       autoRef.current=setTimeout(()=>{
         if(phRef.current===PHASES.DAY&&!procRef.current) runAITurn(plRef.current,chRef.current,null,false);
         sched();
-      },30000+Math.random()*15000);
+      },20000+Math.random()*10000);
     };
     sched();
     return()=>{if(autoRef.current)clearTimeout(autoRef.current);};
@@ -578,14 +578,14 @@ export default function App() {
       const named=aiAlive.filter(ai=>trigger.text.includes(ai.name));
       const hasQ=/[？?]|役職|占い師|霊媒師|騎士|みんな|全員|誰か/.test(trigger.text);
       const rest=[...aiAlive.filter(ai=>!named.some(n=>n.id===ai.id))].sort(()=>Math.random()-.5);
-      speakers=[...named.slice(0,1),...rest.slice(0,1)];
+      speakers=[...named,...rest.slice(0,2)];
       if(!speakers.length)speakers=rest.slice(0,2);
     } else if(trigger){
       const named=aiAlive.filter(ai=>trigger.text.includes(ai.name)&&ai.name!==trigger.sender);
       const rest=[...aiAlive.filter(ai=>ai.name!==trigger.sender&&!named.some(n=>n.id===ai.id))].sort(()=>Math.random()-.5);
-      speakers=[...named.slice(0,1),...rest.slice(0,1)];
+      speakers=[...named,...rest.slice(0,2)];
     } else {
-      speakers=[...aiAlive].sort(()=>Math.random()-.5).slice(0,1);
+      speakers=[...aiAlive].sort(()=>Math.random()-.5).slice(0,1+Math.floor(Math.random()*2));
     }
 
     for(let i=0;i<speakers.length;i++){
