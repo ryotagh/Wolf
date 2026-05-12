@@ -29,7 +29,7 @@ async function gemini(prompt) {
     const key = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
     if (!key) return null;
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${key}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -429,7 +429,7 @@ function TBar({ sec, total }) {
     <div className="tbar">
       <div className="tbar-row">
         <span className="tl" style={{color:urg?"#ff7777":"var(--gold)"}}>⏱ {mm}:{ss}</span>
-        <span className="tr">{urg?"⚠️ まもなく投票":"昼の議論（4分）"}</span>
+        <span className="tr">{urg?"⚠️ まもなく投票":"昼の議論（2分30秒）"}</span>
       </div>
       <div className="ttrack"><div className="tfill" style={{width:`${pct}%`,background:urg?"#cc3333":"var(--gold)"}}/></div>
     </div>
