@@ -17,7 +17,7 @@ const ROLES = {
 const PHASES = { LOBBY:"LOBBY", ROLE_SETUP:"ROLE_SETUP", DAY:"DAY", VOTE:"VOTE", EXECUTION:"EXECUTION", NIGHT:"NIGHT", GAME_OVER:"GAME_OVER" };
 const AI_NAMES = ["きなこ","ぷち","ココア","つくね","うさぎ","くりまんじゅう","ハチワレ","ちいかわ","鎧さん"];
 const DEFAULT_CFG = { VILLAGER:3, WEREWOLF:2, SEER:1, KNIGHT:1, MADMAN:1 };
-const DAY_SEC = 240;
+const DAY_SEC = 150;
 const rnd = a => a[Math.floor(Math.random() * a.length)];
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
@@ -35,7 +35,7 @@ async function gemini(prompt) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { maxOutputTokens: 300, temperature: 1.1, topP: 0.97, topK: 50 },
+          generationConfig: { maxOutputTokens: 500, temperature: 1.1, topP: 0.97, topK: 50 },
           safetySettings: [
             { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
             { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
@@ -49,9 +49,9 @@ async function gemini(prompt) {
     if (!text) return null;
     text = text.replace(/^[\s「」『』""''\n]+|[\s「」『』""''\n]+$/g, "").trim();
     // 最大2文に
-    const parts = text.split(/(?<=[。！？])/);
-    if (parts.length > 3) text = parts.slice(0,3).join("");
-    if (text.length > 200) text = text.slice(0, 200) + "…";
+
+
+    if (text.length > 250) text = text.slice(0, 250) + "。";
     return text || null;
   } catch { return null; }
 }
@@ -264,20 +264,35 @@ function computeExecution(aiVotes, humanVote) {
   return{winnerId:tied[Math.floor(Math.random()*tied.length)],tally:t};
 }
 
-function decideVote(ai, allPlayers) {
+function decideVote(ai, allPlayers, chatLog) {
   const cands=allPlayers.filter(p=>p.alive&&p.id!==ai.id);
   if(!cands.length)return null;
   const isWolf=["WEREWOLF","MADMAN"].includes(ai.role);
   if(isWolf){
-    const wolfNames=ai.memory?.wolfAllies||[];
-    const targets=cands.filter(p=>!wolfNames.includes(p.name)&&p.id!==ai.id);
-    return(targets.length?targets:cands)[Math.floor(Math.random()*(targets.length||cands.length))].id;
+    // 人狼：仲間以外で人間プレイヤーを避ける傾向（バレやすいので）
+    const wolfNames=[...(ai.memory?.wolfAllies||[]),ai.name];
+    const targets=cands.filter(p=>!wolfNames.includes(p.name));
+    const nonHuman=targets.filter(p=>!p.isHuman);
+    const pool=nonHuman.length&&Math.random()>0.3?nonHuman:targets;
+    return(pool.length?pool:cands)[Math.floor(Math.random()*(pool.length||cands.length))].id;
   }
+  // 村人陣営：占い結果優先→会話での疑い頻度→自分の疑い度
   const knownWolf=cands.find(p=>(ai.memory?.seerResults||[]).some(r=>r.name===p.name&&r.result==="人狼"));
   if(knownWolf)return knownWolf.id;
+  const suspicionCount={};
+  cands.forEach(p=>{suspicionCount[p.name]=0;});
+  if(chatLog){
+    chatLog.filter(m=>m.type!=="gm").slice(-20).forEach(m=>{
+      cands.forEach(p=>{
+        if(m.text.includes(p.name)&&/怪し|疑|人狼じゃ|処刑|投票/.test(m.text)){
+          suspicionCount[p.name]=(suspicionCount[p.name]||0)+1;
+        }
+      });
+    });
+  }
   const sus=ai.memory?.suspects||{};
-  const sorted=[...cands].sort((a,b)=>(sus[b.name]||3)-(sus[a.name]||3));
-  return sorted[0]?.id||cands[Math.floor(Math.random()*cands.length)].id;
+  const scored=cands.map(p=>({id:p.id,score:(sus[p.name]||3)+(suspicionCount[p.name]||0)*2})).sort((a,b)=>b.score-a.score);
+  return scored[0]?.id||cands[Math.floor(Math.random()*cands.length)].id;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -660,7 +675,7 @@ export default function App() {
     setMyVote(null);setAiVotes({});setSelTgt(null);
     const av={};
     plRef.current.filter(p=>!p.isHuman&&p.alive).forEach(ai=>{
-      const id=decideVote(ai,plRef.current);
+      const id=decideVote(ai,plRef.current,chRef.current);
       if(id)av[ai.id]=id;
     });
     setAiVotes(av);
@@ -695,10 +710,17 @@ export default function App() {
     pl.filter(p=>!p.isHuman&&p.alive&&["WEREWOLF","SEER","KNIGHT","ILLUSIONIST","WITCH"].includes(p.role)).forEach(ai=>{
       const cands=pl.filter(q=>q.alive&&q.id!==ai.id);if(!cands.length)return;
       if(ai.role==="WEREWOLF"){
-        const wolfNames=ai.memory?.wolfAllies||[];
-        const prio=cands.filter(q=>["SEER","KNIGHT","MEDIUM"].includes(q.role)&&!wolfNames.includes(q.name));
-        const safe=cands.filter(q=>!wolfNames.includes(q.name)&&q.id!==ai.id);
-        const pool=prio.length?prio:safe.length?safe:cands;
+        const wolfNames=[...(ai.memory?.wolfAllies||[]),ai.name];
+        // 優先：占い師・騎士・霊媒師（脅威役職）→ 人間以外のAI → 全体
+        // 人間プレイヤーを直接狙いにくくして人間が早死にしすぎるのを防ぐ
+        const safeCands=cands.filter(q=>!wolfNames.includes(q.name));
+        const prioRoles=safeCands.filter(q=>["SEER","KNIGHT","MEDIUM"].includes(q.role)&&!q.isHuman);
+        const aiOnly=safeCands.filter(q=>!q.isHuman);
+        // 人間を狙う確率を下げる（30%以下）
+        let pool;
+        if(prioRoles.length) pool=prioRoles;
+        else if(aiOnly.length&&Math.random()>0.3) pool=aiOnly;
+        else pool=safeCands.length?safeCands:cands;
         acts[ai.id]=pool[Math.floor(Math.random()*pool.length)].id;
       } else if(ai.role==="ILLUSIONIST"&&!ai.memory?.illusionistUsed){
         acts[ai.id]=cands[Math.floor(Math.random()*cands.length)].id;
