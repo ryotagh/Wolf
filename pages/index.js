@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import Head from "next/head";
 
+// ─────────────────────────────────────────────────────────────
+// CONSTANTS
+// ─────────────────────────────────────────────────────────────
 const ROLES = {
   VILLAGER:    { id:"VILLAGER",    name:"村人",     team:"village",  emoji:"🏘️" },
   SEER:        { id:"SEER",        name:"占い師",   team:"village",  emoji:"🔮" },
@@ -23,31 +26,35 @@ const PHASES = {
 const AI_NAMES = ["きなこ","ぷち","ココア","つくね","うさぎ","くりまんじゅう","ハチワレ","ちいかわ","鎧さん"];
 const DEFAULT_CFG = { VILLAGER:3, WEREWOLF:2, SEER:1, KNIGHT:1, MADMAN:1 };
 const DAY_SEC = 240;
+
+const PERSONALITIES = {
+  logic:    { name:"論理型",   desc:"発言の矛盾や投票履歴を重視する。冷静で根拠を大切にする。", tone:"冷静に" },
+  emotion:  { name:"感情型",   desc:"直感や雰囲気で話す。感情的な訴えが多い。", tone:"感情的に" },
+  silent:   { name:"寡黙型",   desc:"短く話すが重要な時だけ発言する。", tone:"短く端的に" },
+  assertive:{ name:"強弁型",   desc:"断定的に主張する。自信満々な口調。", tone:"断定的に" },
+  suspicious:{ name:"疑り深い型", desc:"複数人を警戒する。常に誰かを疑っている。", tone:"疑わしそうに" },
+  natural:  { name:"天然型",   desc:"少しズレた発言もするが完全な意味不明にはしない。", tone:"少しズレた感じで" },
+  normal:   { name:"普通型",   desc:"バランスよく発言する。", tone:"自然に" },
+};
+
 const rnd = a => a[Math.floor(Math.random() * a.length)];
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
 // ─────────────────────────────────────────────────────────────
 // GEMINI API
 // ─────────────────────────────────────────────────────────────
-async function callGemini(systemPrompt, userMessage) {
+async function callGemini(prompt) {
   try {
     const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
     if (!apiKey) return null;
-
-    const fullPrompt = `${systemPrompt}\n\n${userMessage}`;
-
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: fullPrompt }] }],
-          generationConfig: {
-            maxOutputTokens: 120,
-            temperature: 1.0,
-            topP: 0.95,
-          },
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { maxOutputTokens: 150, temperature: 1.0, topP: 0.95 },
           safetySettings: [
             { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
             { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
@@ -59,9 +66,11 @@ async function callGemini(systemPrompt, userMessage) {
     const data = await res.json();
     let text = data.candidates?.[0]?.content?.parts?.[0]?.text || null;
     if (!text) return null;
-    // クリーニング
-    text = text.replace(/^[\s「」『』"']+|[\s「」『』"']+$/g, "").trim();
-    if (text.length > 120) text = text.substring(0, 120) + "…";
+    text = text.replace(/^[\s「」『』"'\n]+|[\s「」『』"'\n]+$/g, "").trim();
+    // 長すぎる場合は最初の2文に絞る
+    const sentences = text.split(/。|！|？/).filter(s => s.trim());
+    if (sentences.length > 2) text = sentences.slice(0,2).join("。") + "。";
+    if (text.length > 130) text = text.substring(0, 130) + "…";
     return text;
   } catch {
     return null;
@@ -69,254 +78,280 @@ async function callGemini(systemPrompt, userMessage) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// AI SYSTEM PROMPT BUILDER
-// 役職・状況・会話履歴を完全に把握させる
+// AI MEMORY - 各AIの個別メモリ
 // ─────────────────────────────────────────────────────────────
-function buildSystemPrompt(ai, allPlayers, chatLog, day) {
-  const isWolf = ["WEREWOLF", "MADMAN"].includes(ai.role);
-  const isSeer = ai.role === "SEER";
-  const role = ROLES[ai.role];
+function createMemory(role, allies = []) {
+  return {
+    role,
+    claimedRole: null,          // COした役職
+    seerResults: [],            // 占い結果 [{name, result, day}]
+    mediumResults: [],          // 霊媒結果 [{name, result, day}]
+    suspects: {},               // {name: 疑い度(0-10)}
+    trusted: {},                // {name: 信頼度(0-10)}
+    voteHistory: [],            // [{day, target}]
+    pastStatements: [],         // 自分の過去発言 [{day, text}]
+    questionsReceived: [],      // 受けた質問
+    illusionistUsed: false,     // 幻術師の能力使用済み
+    wolfAllies: allies,         // 仲間の人狼名
+    knownRoles: {},             // 知っている他人の役職 {name: role}
+  };
+}
+
+// ─────────────────────────────────────────────────────────────
+// PROMPT BUILDER - 完全な状況をLLMに渡す
+// ─────────────────────────────────────────────────────────────
+function buildFullPrompt(ai, memory, allPlayers, chatLog, day, trigger, humanMsg) {
   const alive = allPlayers.filter(p => p.alive);
   const dead = allPlayers.filter(p => !p.alive);
+  const isWolf = ["WEREWOLF", "MADMAN"].includes(memory.role);
+  const isSeer = memory.role === "SEER";
+  const isMedium = memory.role === "MEDIUM";
+  const personality = PERSONALITIES[ai.personality] || PERSONALITIES.normal;
 
-  // 仲間の人狼
-  const wolfAllies = isWolf
-    ? allPlayers.filter(p => p.role === "WEREWOLF" && p.id !== ai.id).map(p => p.name)
-    : [];
-
-  // 直近の会話（最大8件）
+  // 直近の会話ログ（最大10件）
   const recentChat = chatLog
     .filter(m => m.type !== "gm")
-    .slice(-8)
-    .map(m => `${m.sender}: ${m.text}`)
+    .slice(-10)
+    .map(m => `  ${m.sender}：${m.text}`)
     .join("\n");
 
-  // 占い師の知っている情報
-  const seerInfo = ai.knownInfo?.length > 0
-    ? `\n【あなたが占いで得た情報】\n${ai.knownInfo.join("\n")}`
+  // 公開されている役職CO情報
+  const coClaims = allPlayers
+    .filter(p => p.memory?.claimedRole)
+    .map(p => `  ${p.name}：${ROLES[p.memory.claimedRole]?.name || p.memory.claimedRole}とCO`)
+    .join("\n") || "  なし";
+
+  // 公開されている占い結果
+  const publicSeerResults = chatLog
+    .filter(m => m.isSeer)
+    .slice(-5)
+    .map(m => `  ${m.sender}：${m.text}`)
+    .join("\n") || "  なし";
+
+  // 自分の過去発言
+  const myPastStatements = memory.pastStatements
+    .slice(-5)
+    .map(s => `  ${s.day}日目：${s.text}`)
+    .join("\n") || "  なし";
+
+  // 占い結果（自分が得た）
+  const mySeerResults = memory.seerResults
+    .map(r => `  ${r.day}日目夜：${r.name}→${r.result}`)
+    .join("\n") || "  なし";
+
+  // 霊媒結果（自分が得た）
+  const myMediumResults = memory.mediumResults
+    .map(r => `  ${r.day}日目：${r.name}（処刑済み）→${r.result}`)
+    .join("\n") || "  なし";
+
+  // 投票履歴
+  const myVoteHistory = memory.voteHistory
+    .map(v => `  ${v.day}日目：${v.target}に投票`)
+    .join("\n") || "  なし";
+
+  // 疑っている人
+  const mySuspects = Object.entries(memory.suspects)
+    .filter(([,v]) => v >= 4)
+    .sort((a,b) => b[1]-a[1])
+    .map(([name,v]) => `  ${name}（疑い度${v}）`)
+    .join("\n") || "  特になし";
+
+  // 信頼している人
+  const myTrusted = Object.entries(memory.trusted)
+    .filter(([,v]) => v >= 4)
+    .sort((a,b) => b[1]-a[1])
+    .map(([name,v]) => `  ${name}（信頼度${v}）`)
+    .join("\n") || "  特になし";
+
+  // 人狼専用情報
+  const wolfInfo = isWolf && memory.wolfAllies.length > 0
+    ? `\n【仲間の人狼（絶対秘密）】\n  ${memory.wolfAllies.join("、")}`
     : "";
 
-  // 処刑された人
-  const executedInfo = dead.length > 0
-    ? `\n【これまでに処刑・死亡した人】${dead.map(p => p.name).join("、")}`
+  // 直前のトリガー
+  const triggerInfo = trigger
+    ? `\n【直前の発言（これに対して返答することが最優先）】\n  ${trigger.sender}：「${trigger.text}」`
     : "";
 
-  // 役職別の詳細な戦略指示
-  let roleStrategy = "";
+  // 人間からの質問への特別指示
+  const humanInstruction = humanMsg
+    ? buildHumanResponseInstruction(ai, memory, humanMsg, allPlayers, day)
+    : "";
 
-  if (ai.role === "WEREWOLF") {
-    roleStrategy = `
-【あなたは人狼です。以下の戦略を取ってください】
-・絶対に村人のふりをする。「私は村人です」と明言してもよい
-・仲間の人狼（${wolfAllies.join("、") || "なし"}）を守る。彼らへの疑いは別に向ける
-・積極的に村人陣営の誰かを疑って誘導する
-・時には「占い師として言います〜が人狼でした」と偽装して混乱させる（3日目以降推奨）
-・質問されたら嘘をついて答える
-・他の人の発言の矛盾を突いて信用を失わせる
-・自分への疑いが集まったら逆に攻撃に転じる
-`;
-  } else if (ai.role === "MADMAN") {
-    roleStrategy = `
-【あなたは狂人です。人狼陣営を勝たせるために動いてください】
-・自分が人狼かどうかは分からないが、村人陣営を混乱させることが目標
-・でたらめな情報を流す、間違った人を疑わせる
-・「占い師です」と名乗って偽情報を流すのも効果的
-・積極的に場を乱す発言をする
-`;
-  } else if (ai.role === "SEER") {
-    roleStrategy = `
-【あなたは占い師です】
-・得た情報（${ai.knownInfo?.join("、") || "まだなし"}）を適切なタイミングで公開する
-・早すぎると人狼に狙われる。遅すぎると情報が活かせない
-・偽占い師が現れたら「本物の占い師は私です」と主張して反論する
-・カミングアウトする際は「占い師として正式に報告します」と明言する
-・質問されたら慎重に答える（占い師であることは状況次第で公開してよい）
-`;
-  } else if (ai.role === "KNIGHT") {
-    roleStrategy = `
-【あなたは騎士です】
-・役職を隠しながら議論に参加する
-・怪しい人物への疑いを共有する
-・「騎士として誰かを守っています」とカミングアウトするのは効果的な場合もある
-`;
-  } else {
-    roleStrategy = `
-【あなたは${role.name}（村人陣営）です】
-・人狼を見つけることが目標
-・論理的な推理と感情的な訴えを使い分ける
-・怪しいと思う人を積極的に指摘する
-・質問されたら正直に答える
-`;
-  }
+  // 役職別の戦略指示
+  const roleStrategy = buildRoleStrategy(memory, ai, allPlayers, day);
 
-  return `あなたは人狼ゲームのキャラクター「${ai.name}」です。
+  return `あなたは人狼ゲームのAIプレイヤー「${ai.name}」です。
 
-【基本情報】
-・役職: ${role.name}
-・性格: ${ai.personality}型（論理的/感情的/疑い深い/積極的/慎重/天然などで振る舞う）
-・現在: ${day}日目の昼
-・生存者: ${alive.map(p => p.name).join("、")}${executedInfo}${seerInfo}
+━━ 自分の基本情報 ━━
+・名前：${ai.name}
+・性格：${personality.name}（${personality.desc}）
+・本当の役職：${ROLES[memory.role]?.name}（${isWolf ? "人狼陣営" : ROLES[memory.role]?.team === "village" ? "村人陣営" : "第三勢力"}）
+・自分がCOした役職：${memory.claimedRole ? ROLES[memory.claimedRole]?.name : "まだCOしていない"}${wolfInfo}
 
+━━ ゲーム状況 ━━
+・現在：${day}日目の昼
+・生存者：${alive.map(p=>p.name).join("、")}
+・死亡者：${dead.length > 0 ? dead.map(p=>p.name).join("、") : "なし"}
+
+━━ 公開情報 ━━
+役職CO状況：
+${coClaims}
+
+公開された占い結果：
+${publicSeerResults}
+
+━━ 自分だけが知っている情報 ━━
+自分の占い結果：
+${mySeerResults}
+
+自分の霊媒結果：
+${myMediumResults}
+
+疑っている人：
+${mySuspects}
+
+信頼している人：
+${myTrusted}
+
+━━ 自分の行動履歴 ━━
+過去発言：
+${myPastStatements}
+
+投票履歴：
+${myVoteHistory}
+
+━━ 直近の会話 ━━
+${recentChat || "（まだ発言なし）"}
+${triggerInfo}
+
+━━ 役職別戦略 ━━
 ${roleStrategy}
+${humanInstruction}
 
-【会話の絶対ルール】
-1. 必ず直前の会話の流れを読んで、それに対して自然に返答する
-2. 自分の名前が出たり、質問されたりしたら必ずそれに答える
-3. 「様子がおかしい」「怪しい」だけでなく、具体的な根拠や名前を出して発言する
-4. 1〜2文の短い日本語のみ。余計な記号・括弧・説明不要
-5. 同じ発言を繰り返さない
-6. 役職カミングアウトは戦略的に判断して行う（隠し続けなくてもよい）
-7. 生き生きとした個性ある発言をする
+━━ 絶対ルール ━━
+1. 過去の自分の発言と矛盾しないこと
+2. 占い結果は実際に得た結果のみ使うこと（でたらめを言わない）
+3. 直前の発言・質問には必ず反応すること（無視禁止）
+4. 「〇〇さんへの疑いが強まっています」のような抽象的な発言は禁止。具体的な根拠を述べること
+5. 実際に起きていないことを「昨日〜した」と言わない
+6. 1〜3文の自然な日本語のみ
+7. ${personality.tone}話すこと
+8. 同じ表現を繰り返さないこと
 
-【直近の会話】
-${recentChat || "（まだ発言なし）"}`;
+今の状況を踏まえた発言（1〜3文）：`;
 }
 
-// ─────────────────────────────────────────────────────────────
-// 誰への発言か・何を聞かれているかを解析
-// ─────────────────────────────────────────────────────────────
-function analyzeMessage(text, speakerName, allPlayers) {
-  const alive = allPlayers.filter(p => p.alive);
+// 役職別の戦略指示を生成
+function buildRoleStrategy(memory, ai, allPlayers, day) {
+  const isWolf = ["WEREWOLF", "MADMAN"].includes(memory.role);
+  const isSeer = memory.role === "SEER";
+  const isMedium = memory.role === "MEDIUM";
 
-  // 名指しされたプレイヤー
-  const mentioned = alive.filter(p => text.includes(p.name) && p.name !== speakerName);
+  if (memory.role === "WEREWOLF") {
+    const wolfNames = memory.wolfAllies.join("、") || "なし";
+    return `あなたは人狼です。村人のふりをして村人陣営を処刑に誘導するのが目標。
+・仲間（${wolfNames}）を守る。彼らへの疑いを他に向ける
+・占い師を名乗って偽情報を流す戦術も有効（特に本物の占い師が死んだ後は使いやすいが、タイミングは慎重に）
+・質問されたら村人として自然に嘘をつく
+・具体的な根拠を挙げて村人陣営を疑わせる`;
+  }
 
-  // 質問の種類を検出
-  const isQuestion = /[？?]/.test(text) ||
-    ["いますか", "ですか", "ますか", "でしょ", "どう思", "なんで", "なぜ", "教えて", "誰が", "誰です"].some(w => text.includes(w));
+  if (memory.role === "MADMAN") {
+    return `あなたは狂人です。人狼陣営を勝たせるために村人陣営を混乱させるのが目標。
+・偽の役職COをして情報を撹乱させることも有効
+・でたらめな疑いをかけて場を乱す
+・人狼が誰かは分からないが、村人陣営の議論を妨害する`;
+  }
 
-  // 占い師について聞いているか
-  const askingSeer = text.includes("占い師");
+  if (isSeer) {
+    const hasResults = memory.seerResults.length > 0;
+    return `あなたは占い師です。
+・得た占い結果：${hasResults ? memory.seerResults.map(r=>`${r.name}→${r.result}`).join("、") : "まだなし"}
+・${hasResults ? "結果を持っているなら積極的にCOを検討する（早すぎると人狼に狙われるリスクあり）" : "まだ結果がないなら潜伏を続ける"}
+・偽占い師が現れたら「私が本物です」と主張する
+・質問されたらCOするか潜伏するか状況を見て判断する`;
+  }
 
-  // 役職について聞いているか
-  const askingRole = text.includes("役職") || text.includes("何者") || text.includes("正体");
+  if (isMedium) {
+    const hasResults = memory.mediumResults.length > 0;
+    return `あなたは霊媒師です。処刑された人の役職を確認できます。
+・確認できた結果：${hasResults ? memory.mediumResults.map(r=>`${r.name}→${r.result}`).join("、") : "まだなし"}
+・結果を持っているなら状況に応じてCOを検討する
+・偽霊媒師が出たら反論する`;
+  }
 
-  // 全員への問いかけか
-  const toAll = text.includes("みんな") || text.includes("誰か") || text.includes("みなさん") || (!mentioned.length && isQuestion);
+  if (memory.role === "KNIGHT") {
+    return `あなたは騎士です。夜に誰かを人狼の攻撃から守れます。
+・役職は隠しながら議論に参加する
+・有用と判断したらCOして守ることを宣言するのも一つの手`;
+  }
 
-  return { mentioned, isQuestion, askingSeer, askingRole, toAll };
+  return `あなたは${ROLES[memory.role]?.name}（村人陣営）です。
+・人狼を見つけることが目標
+・具体的な根拠を持って疑いを述べる
+・他のプレイヤーの発言をよく聞いて矛盾を指摘する`;
 }
 
-// ─────────────────────────────────────────────────────────────
-// AIの発言を生成（役割と状況を完全に把握）
-// ─────────────────────────────────────────────────────────────
-async function generateAISpeech(ai, allPlayers, chatLog, day, trigger) {
-  const systemPrompt = buildSystemPrompt(ai, allPlayers, chatLog, day);
+// 人間の発言に対する特別な応答指示
+function buildHumanResponseInstruction(ai, memory, humanMsg, allPlayers, day) {
+  const text = humanMsg.text;
+  const sender = humanMsg.sender;
+  const isWolf = ["WEREWOLF", "MADMAN"].includes(memory.role);
+  const isSeer = memory.role === "SEER";
+  const isMedium = memory.role === "MEDIUM";
 
-  let userMessage = "あなたの発言（1〜2文）:";
-
-  if (trigger) {
-    const analysis = analyzeMessage(trigger.text, trigger.sender, allPlayers);
-
-    // 自分が名指しされた
-    if (analysis.mentioned.some(p => p.id === ai.id)) {
-      userMessage = `${trigger.sender}があなた（${ai.name}）に直接言及しました: 「${trigger.text}」
-あなたはこれに必ず応答してください。無視は絶対にしないでください。
-あなたの役職に基づいた返答（1〜2文）:`;
+  // 役職確認・CO要求
+  if (/役職|正体|何者|COして|カミングアウト|占い師い|霊媒師い|騎士い|村人い/.test(text)) {
+    if (isSeer) {
+      const hasResults = memory.seerResults.length > 0;
+      return `\n【重要指示】${sender}が役職について聞いています。
+あなたは占い師です。COするかどうか判断してください。
+COする場合：「占い師です。${hasResults ? memory.seerResults[memory.seerResults.length-1].name + "は" + memory.seerResults[memory.seerResults.length-1].result + "でした" : "まだ結果がありません"}」と答える。
+潜伏する場合：「村人として頑張っています」など曖昧に答える。
+必ず返答すること。無視禁止。`;
     }
-    // 占い師について質問された
-    else if (analysis.askingSeer && analysis.toAll) {
-      const isSeer = ai.role === "SEER";
-      const isWolf = ["WEREWOLF", "MADMAN"].includes(ai.role);
-      if (isSeer && Math.random() > 0.3) {
-        userMessage = `${trigger.sender}が「${trigger.text}」と聞きました。
-あなたは占い師です。カミングアウトするかどうか判断して答えてください。
-カミングアウトする場合は「占い師です。${ai.knownInfo?.length ? ai.knownInfo[ai.knownInfo.length-1] : "まだ占い結果はありません。"}」と答えてください。
-あなたの返答（1〜2文）:`;
-      } else if (isWolf && Math.random() > 0.6) {
-        userMessage = `${trigger.sender}が「${trigger.text}」と聞きました。
-あなたは人狼ですが、偽の占い師として名乗り出るチャンスです（推奨）。
-または村人として「いると思いますが私ではありません」と答えることもできます。
-あなたの返答（1〜2文）:`;
-      } else {
-        userMessage = `${trigger.sender}が「${trigger.text}」と聞きました。
-全員への質問です。あなたはこれに自然に反応してください。
-あなたの返答（1〜2文）:`;
-      }
+    if (isMedium) {
+      return `\n【重要指示】${sender}が役職について聞いています。
+あなたは霊媒師です。COするかどうか状況を見て判断して返答してください。必ず返答すること。`;
     }
-    // 役職について質問された
-    else if (analysis.askingRole && analysis.toAll) {
-      userMessage = `${trigger.sender}が「${trigger.text}」と全員に聞きました。
-あなたの役職（${ROLES[ai.role].name}）に基づいて、公開するかどうか判断して返答してください。
-あなたの返答（1〜2文）:`;
+    if (isWolf) {
+      return `\n【重要指示】${sender}が役職について聞いています。
+あなたは人狼ですが村人のふりをしてください。「村人です」と答えるか、状況によって偽COするか判断してください。必ず返答すること。`;
     }
-    // 全員への質問
-    else if (analysis.isQuestion && analysis.toAll && Math.random() > 0.5) {
-      userMessage = `${trigger.sender}が全員に「${trigger.text}」と聞きました。
-あなたはこの質問に自分の役職・立場から答えてください。
-あなたの返答（1〜2文）:`;
-    }
-    // 誰かへの発言に反応
-    else {
-      userMessage = `直前の発言: ${trigger.sender}「${trigger.text}」
-この発言を受けて、あなたはどう反応しますか？
-自分の役職・戦略に基づいて具体的に返答してください（1〜2文）:`;
-    }
-  } else {
-    // 自発的な発言
-    userMessage = `会話の流れを読んで、あなた（${ai.name}）として自発的に発言してください。
-具体的な名前や根拠を出して、役職に沿った戦略的な発言をしてください（1〜2文）:`;
+    return `\n【重要指示】${sender}が役職について聞いています。
+あなたは${ROLES[memory.role]?.name}です。正直に答えるか潜伏するか判断して返答してください。必ず返答すること。`;
   }
 
-  const result = await callGemini(systemPrompt, userMessage);
-  return result;
-}
-
-// ─────────────────────────────────────────────────────────────
-// フォールバック（API失敗時）
-// ─────────────────────────────────────────────────────────────
-function fallbackSpeech(ai, allPlayers, trigger, day) {
-  const isWolf = ["WEREWOLF", "MADMAN"].includes(ai.role);
-  const alive = allPlayers.filter(p => p.alive && p.id !== ai.id);
-  const wolfAllies = isWolf
-    ? allPlayers.filter(p => p.role === "WEREWOLF" && p.id !== ai.id).map(p => p.id)
-    : [];
-  const targets = alive.filter(p => !wolfAllies.includes(p.id));
-  const target = targets[Math.floor(Math.random() * targets.length)] || alive[0];
-
-  if (trigger) {
-    const { sender, text } = trigger;
-    if (text.includes(ai.name)) {
-      return isWolf
-        ? `${sender}さん、私を疑うのは間違いです。${target?.name}さんの方がよほど怪しいですよ。`
-        : `${sender}さん、私は村人です。なぜ私を疑うんですか？`;
+  // 占い結果の要求
+  if (/占い結果|占って|誰を占|占いの結果/.test(text)) {
+    if (isSeer && memory.seerResults.length > 0) {
+      const latest = memory.seerResults[memory.seerResults.length-1];
+      return `\n【重要指示】占い結果を求められています。
+あなたは占い師で、${latest.name}を占い「${latest.result}」という結果を得ています。
+COして結果を公開するか、潜伏を続けるか判断して返答してください。`;
     }
-    if (text.includes("占い師")) {
-      if (ai.role === "SEER") return `占い師として言います。昨夜${ai.knownInfo?.[ai.knownInfo.length-1] || "情報を得ました"}。`;
-      if (isWolf && day >= 3) return `占い師として言いますが、${target?.name}さんが人狼でした。`;
-      return `占い師がいるなら情報を出してほしいですね。`;
-    }
-    return isWolf
-      ? `${sender}さん、それより${target?.name}さんが気になります。`
-      : `${sender}さん、その通りですね。${target?.name}さんについてもっと話しましょう。`;
   }
 
-  if (ai.role === "SEER" && ai.knownInfo?.length && day >= 2) {
-    return `占い師として報告します。${ai.knownInfo[ai.knownInfo.length-1]}`;
+  // 疑われた・名指しされた
+  if (text.includes(ai.name) && /怪し|疑|投票|処刑|人狼じゃ|嘘/.test(text)) {
+    return `\n【重要指示】${sender}があなた（${ai.name}）を直接疑っています。
+必ず弁明や反論をしてください。${isWolf ? "人狼である事実は隠しつつ、具体的な反論で疑いをかわしてください。" : "正直に弁明してください。"}`;
   }
 
-  return isWolf
-    ? `${target?.name}さん、昨日からずっと気になっているんですが、説明してもらえますか？`
-    : `${target?.name}さんへの疑いが強まっています。みなさんはどう思いますか？`;
-}
-
-// ─────────────────────────────────────────────────────────────
-// 投票・夜行動
-// ─────────────────────────────────────────────────────────────
-function decideVote(ai, allPlayers) {
-  const cands = allPlayers.filter(p => p.alive && p.id !== ai.id);
-  if (!cands.length) return null;
-  const isWolf = ["WEREWOLF", "MADMAN"].includes(ai.role);
-  if (isWolf) {
-    const wolfIds = allPlayers.filter(p => ["WEREWOLF","MADMAN"].includes(p.role)).map(p => p.id);
-    const targets = cands.filter(p => !wolfIds.includes(p.id));
-    return (targets.length ? targets : cands)[Math.floor(Math.random() * (targets.length || cands.length))].id;
+  // 直接の質問
+  if (text.includes(ai.name) && /[？?]|どう思|どうして|なぜ|なんで|教えて/.test(text)) {
+    return `\n【重要指示】${sender}があなた（${ai.name}）に直接質問しています。
+必ずこの質問に答えてください。完全な無視は絶対禁止です。`;
   }
-  const knownWolf = cands.find(p => (ai.knownInfo||[]).some(i => i.includes(p.name) && i.includes("人狼")));
-  if (knownWolf) return knownWolf.id;
-  const sus = ai.suspicion || {};
-  const sorted = [...cands].sort((a,b) => (sus[b.name]||3) - (sus[a.name]||3));
-  return sorted[0]?.id || cands[Math.floor(Math.random() * cands.length)].id;
+
+  // 全員への質問
+  if (/[？?]|どう思|誰が|みんな|全員/.test(text)) {
+    return `\n【重要指示】${sender}が全員に質問または呼びかけています。
+あなたもこれに反応して発言してください。`;
+  }
+
+  return "";
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -327,30 +362,34 @@ function buildPlayers(humanName, cfg) {
   Object.entries(cfg).forEach(([r,c]) => { for(let i=0;i<c;i++) roles.push(r); });
   const shuffled = [...roles].sort(() => Math.random() - 0.5);
   const names = [...AI_NAMES].sort(() => Math.random() - 0.5);
-  const pts = ["論理","感情","疑い深い","積極的","慎重","天然","強引"];
+  const personalityKeys = Object.keys(PERSONALITIES);
+
+  // 人狼同士を把握させる
+  const wolfPositions = [];
+  shuffled.forEach((r, i) => { if (r === "WEREWOLF") wolfPositions.push(i); });
 
   const players = [{
     id:"human", name:humanName.trim()||"あなた", isHuman:true,
-    role:shuffled[0], alive:true, personality:"論理",
-    knownInfo:[], publishedInfo:[], suspicion:{}, illusionistUsed:false, claimedSeer:false,
+    role:shuffled[0], alive:true, personality:"normal",
+    memory: createMemory(shuffled[0]),
   }];
 
   for (let i=1; i<shuffled.length; i++) {
+    const role = shuffled[i];
+    const wolfAllies = role === "WEREWOLF"
+      ? wolfPositions.filter(pos => pos !== i).map(pos =>
+          pos === 0 ? (humanName.trim()||"あなた") : names[(pos-1) % names.length]
+        )
+      : [];
     players.push({
       id:`ai_${i}`, name:names[(i-1)%names.length], isHuman:false,
-      role:shuffled[i], alive:true, personality:pts[(i-1)%pts.length],
-      knownInfo:[], publishedInfo:[], suspicion:{}, illusionistUsed:false, claimedSeer:false,
+      role, alive:true,
+      personality: personalityKeys[(i-1) % personalityKeys.length],
+      memory: createMemory(role, wolfAllies),
     });
   }
 
-  return players.map(p => {
-    const sus = {};
-    players.forEach(q => { if(q.id!==p.id) sus[q.name]=2+Math.floor(Math.random()*3); });
-    if (p.role==="WEREWOLF") {
-      players.filter(q=>q.role==="WEREWOLF"&&q.id!==p.id).forEach(q=>{sus[q.name]=0;});
-    }
-    return {...p, suspicion:sus};
-  });
+  return players;
 }
 
 function checkWin(players) {
@@ -373,6 +412,24 @@ function computeExecution(aiVotes, humanVote) {
   return{winnerId:tied[Math.floor(Math.random()*tied.length)],tally};
 }
 
+function decideVote(ai, allPlayers) {
+  const cands = allPlayers.filter(p => p.alive && p.id !== ai.id);
+  if (!cands.length) return null;
+  const isWolf = ["WEREWOLF","MADMAN"].includes(ai.role);
+  if (isWolf) {
+    const wolfIds = allPlayers.filter(p=>["WEREWOLF","MADMAN"].includes(p.role)).map(p=>p.id);
+    const targets = cands.filter(p=>!wolfIds.includes(p.id));
+    return (targets.length?targets:cands)[Math.floor(Math.random()*(targets.length||cands.length))].id;
+  }
+  // 占い師がクロ判定した人
+  const knownWolf = cands.find(p => ai.memory?.seerResults?.some(r => r.name===p.name && r.result==="人狼"));
+  if (knownWolf) return knownWolf.id;
+  // 疑い度が高い人
+  const sus = ai.memory?.suspects || {};
+  const sorted = [...cands].sort((a,b)=>(sus[b.name]||3)-(sus[a.name]||3));
+  return sorted[0]?.id || cands[Math.floor(Math.random()*cands.length)].id;
+}
+
 // ─────────────────────────────────────────────────────────────
 // STYLES
 // ─────────────────────────────────────────────────────────────
@@ -389,7 +446,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .day-top{flex-shrink:0;padding-bottom:6px}
 .chat-main{flex:1;display:flex;flex-direction:column;overflow:hidden;background:var(--surf);border:1px solid var(--bdr);border-radius:11px;min-height:0}
 .chat-hdr{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border-bottom:1px solid var(--bdr);flex-shrink:0}
-.chat-body{flex:1;overflow-y:auto;padding:10px;min-height:0}
+.chat-body{flex:1;overflow-y:auto;padding:10px;min-height:0;scroll-behavior:smooth;}
 .chat-body::-webkit-scrollbar{width:3px}
 .chat-body::-webkit-scrollbar-thumb{background:var(--bdr);border-radius:3px}
 .chat-foot{flex-shrink:0;padding:8px;border-top:1px solid var(--bdr);display:flex;gap:7px;background:var(--surf)}
@@ -425,18 +482,17 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 input{background:var(--surf2);border:1px solid var(--bdr);border-radius:8px;color:var(--text);font-family:'Noto Serif JP',serif;padding:8px 11px;font-size:.8rem;outline:none;transition:border-color .2s}
 input:focus{border-color:var(--gold)}
 .msg{margin-bottom:10px;animation:fu .2s ease}
-@keyframes fu{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+@keyframes fu{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 .mh{display:flex;align-items:baseline;gap:5px;margin-bottom:2px}
 .mn{font-weight:700;font-size:.76rem}
 .mn-ai{color:var(--gold)}.mn-hu{color:#77ccff}.mn-gm{color:#aa88ff}.mn-sr{color:#66ddff}
-.mt{font-size:.57rem;color:var(--muted)}.mb{font-size:.82rem;line-height:1.75;color:var(--text)}
+.mt{font-size:.57rem;color:var(--muted)}.mb{font-size:.83rem;line-height:1.76;color:var(--text)}
 .msg-gm{background:rgba(70,30,140,.12);border-left:3px solid var(--purple);padding:5px 8px;border-radius:0 7px 7px 0}
 .msg-gm .mb{color:#ccbbff;font-size:.74rem}
 .msg-sr{background:rgba(0,80,120,.18);border-left:3px solid #66ddff;padding:5px 8px;border-radius:0 7px 7px 0}
 .msg-sr .mb{color:#99eeff;font-size:.8rem}
 .pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:6px;margin-top:6px}
 .pc{background:var(--surf2);border:1px solid var(--bdr);border-radius:8px;padding:8px;text-align:center;transition:all .14s;cursor:default}
-.pc.dead{opacity:.2;filter:grayscale(1)}
 .pc.sel{cursor:pointer;border-color:#5533aa}.pc.sel:hover{border-color:var(--gold)}
 .pc.picked{border-color:var(--red);background:rgba(150,0,0,.14)}
 .pe{font-size:1.25rem;margin-bottom:1px}.pn{font-size:.67rem;font-weight:700}
@@ -472,7 +528,6 @@ input:focus{border-color:var(--gold)}
 .dead-roles{background:rgba(20,0,40,.3);border:1px solid var(--purple);border-radius:9px;padding:11px;margin-bottom:10px}
 .dead-roles-title{color:#bb99ff;font-size:.75rem;margin-bottom:8px}
 .fl{display:flex}.g2{gap:8px}.mb2{margin-bottom:8px}.mb3{margin-bottom:10px}
-.ic{align-items:center}.jb{justify-content:space-between}
 .ts{font-size:.74rem}.tx{font-size:.63rem}.tm{color:var(--muted)}.tg{color:var(--gold)}.fb{font-weight:700}
 .mt2{margin-top:8px}.mt3{margin-top:9px}
 .thi{color:var(--muted);font-size:.63rem}
@@ -563,6 +618,7 @@ export default function App() {
   const [execInfo, setExecInfo] = useState(null);
 
   const chatBodyRef = useRef(null);
+  const userScrolledRef = useRef(false);
   const procRef = useRef(false);
   const timerRef = useRef(null);
   const autoRef = useRef(null);
@@ -577,10 +633,27 @@ export default function App() {
   useEffect(()=>{phRef.current=phase;},[phase]);
   useEffect(()=>{dayRef.current=day;},[day]);
 
+  // スクロール制御：ユーザーが上を見ていなければ自動スクロール
   useEffect(()=>{
-    const el=chatBodyRef.current; if(!el)return;
-    if(el.scrollHeight-el.scrollTop-el.clientHeight<120) el.scrollTop=el.scrollHeight;
+    const el=chatBodyRef.current;
+    if(!el)return;
+    const isNearBottom=el.scrollHeight-el.scrollTop-el.clientHeight<150;
+    if(isNearBottom||!userScrolledRef.current){
+      el.scrollTop=el.scrollHeight;
+    }
   },[chat]);
+
+  // ユーザーのスクロール検知
+  useEffect(()=>{
+    const el=chatBodyRef.current;
+    if(!el)return;
+    const onScroll=()=>{
+      const isNearBottom=el.scrollHeight-el.scrollTop-el.clientHeight<100;
+      userScrolledRef.current=!isNearBottom;
+    };
+    el.addEventListener("scroll",onScroll);
+    return()=>el.removeEventListener("scroll",onScroll);
+  },[]);
 
   useEffect(()=>{
     if(timerOn){
@@ -593,7 +666,7 @@ export default function App() {
 
   useEffect(()=>{
     if(timerSec===0&&phRef.current===PHASES.DAY&&!voteDoneRef.current){
-      voteDoneRef.current=true; doVotePhase();
+      voteDoneRef.current=true;doVotePhase();
     }
   },[timerSec]);
 
@@ -602,10 +675,10 @@ export default function App() {
     const schedule=()=>{
       autoRef.current=setTimeout(()=>{
         if(phRef.current===PHASES.DAY&&!procRef.current){
-          runAITurn(plRef.current,chRef.current,null);
+          runAITurn(plRef.current,chRef.current,null,false);
         }
         schedule();
-      },13000+Math.random()*9000);
+      },14000+Math.random()*10000);
     };
     schedule();
     return()=>{if(autoRef.current)clearTimeout(autoRef.current);};
@@ -634,6 +707,7 @@ export default function App() {
     setDay(1);dayRef.current=1;
     setChat([]);chRef.current=[];setWChat([]);setExecInfo(null);
     setTimerSec(DAY_SEC);setTimerOn(true);voteDoneRef.current=false;
+    userScrolledRef.current=false;
     const baker=pl.find(p=>p.role==="BAKER"&&p.alive);
     const txt=`第1日目の朝が始まりました。${pl.length}人の村人たちよ、人狼を探し出せ！${baker?" 🍞 どこからかパンの焼ける匂いがします。":""}`;
     const first=mk({type:"gm",sender:"🎲 GM",text:txt,isHuman:false});
@@ -648,60 +722,115 @@ export default function App() {
     for(let i=0;i<ais.length;i++){
       await wait(800+Math.random()*1000);
       const ai=ais[i];
-      const prompt=buildSystemPrompt(ai,pl,ch,1);
-      const userMsg=`自己紹介または最初の発言をしてください（1〜2文）:`;
-      let text=await callGemini(prompt,userMsg);
+      const prompt=buildFullPrompt(ai,ai.memory,pl,ch,1,null,null)+"\n最初の挨拶や自己紹介（1〜2文）：";
+      let text=await callGemini(prompt);
       if(!text) text=`こんにちは、${ai.name}です。よろしくお願いします。`;
+      // メモリに保存
+      const updPl=plRef.current.map(p=>p.id===ai.id?{...p,memory:{...p.memory,pastStatements:[...p.memory.pastStatements,{day:1,text}]}}:p);
+      setPlayers(updPl);plRef.current=updPl;
       const m=mk({type:"ai",sender:ai.name,text,isHuman:false});
       setChat(p=>[...p,m]);ch=[...ch,m];chRef.current=ch;
     }
     setThinking(false);procRef.current=false;
   }
 
-  async function runAITurn(pl,ch,trigger){
+  // ─────────────────────────────────────────────────────────────
+  // AIターン（完全LLM駆動）
+  // ─────────────────────────────────────────────────────────────
+  async function runAITurn(pl,ch,trigger,isHumanTrigger){
     if(procRef.current)return;
     procRef.current=true;setThinking(true);
     const aiAlive=pl.filter(p=>!p.isHuman&&p.alive);
     if(!aiAlive.length){setThinking(false);procRef.current=false;return;}
 
+    // 発言者の選定
     let speakers=[];
-    if(trigger){
-      const analysis=analyzeMessage(trigger.text,trigger.sender,aiAlive);
-      // 名指しされたAIは必ず返答
-      const named=aiAlive.filter(ai=>analysis.mentioned.some(m=>m.id===ai.id));
-      // 全員への質問には全員から1〜2人が反応
-      const rest=[...aiAlive.filter(ai=>!named.some(n=>n.id===ai.id))].sort(()=>Math.random()-.5);
-      const reactors=rest.slice(0, analysis.toAll ? 2 : 1);
-      speakers=[...named,...reactors];
+    if(trigger&&isHumanTrigger){
+      // 人間発言：全AIが反応候補。名指しされたAIは必ず。全員への質問は2〜3人が反応
+      const namedAIs=aiAlive.filter(ai=>trigger.text.includes(ai.name));
+      const hasGlobalQuestion=/[？?]|みんな|全員|誰か|役職|占い師|霊媒師|騎士/.test(trigger.text);
+      const rest=[...aiAlive.filter(ai=>!namedAIs.some(n=>n.id===ai.id))].sort(()=>Math.random()-.5);
+      const reactors=hasGlobalQuestion?rest.slice(0,2):rest.slice(0,1);
+      speakers=[...namedAIs,...reactors];
+      if(!speakers.length)speakers=rest.slice(0,2);
+    } else if(trigger){
+      // AI発言に対してAIが反応
+      const namedAIs=aiAlive.filter(ai=>trigger.text.includes(ai.name));
+      const rest=[...aiAlive.filter(ai=>!namedAIs.some(n=>n.id===ai.id)&&ai.name!==trigger.sender)].sort(()=>Math.random()-.5);
+      speakers=[...namedAIs.slice(0,1),...rest.slice(0,1)];
     } else {
       speakers=[...aiAlive].sort(()=>Math.random()-.5).slice(0,2+Math.floor(Math.random()*2));
     }
 
     for(let i=0;i<speakers.length;i++){
-      await wait(1000+Math.random()*1500);
+      await wait(1200+Math.random()*1600);
       if(phRef.current!==PHASES.DAY)break;
       const ai=speakers[i];
+      const currentAi=plRef.current.find(p=>p.id===ai.id);
+      if(!currentAi||!currentAi.alive)continue;
+
       let text="";let isSeer=false;
 
-      // 占い師が結果を持っていて未公開
-      if(ai.role==="SEER"&&dayRef.current>=2&&ai.knownInfo?.length>0){
-        const unpub=ai.knownInfo.filter(i=>!(ai.publishedInfo||[]).includes(i));
-        if(unpub.length&&Math.random()>0.5){
-          const sys=buildSystemPrompt(ai,pl,ch,dayRef.current);
-          const um=`占い師として昨夜「${unpub[unpub.length-1]}」という結果を得ました。今このタイミングで公開する自然な発言（1〜2文）:`;
-          text=await callGemini(sys,um)||`占い師として報告します。${unpub[unpub.length-1]}`;
+      // 占い師が未公開の結果を持っている場合、COのチャンス
+      if(currentAi.role==="SEER"&&dayRef.current>=2&&currentAi.memory?.seerResults?.length>0){
+        const unpub=currentAi.memory.seerResults.filter(r=>
+          !currentAi.memory.pastStatements.some(s=>s.text.includes(r.name)&&s.text.includes(r.result))
+        );
+        if(unpub.length&&Math.random()>0.45){
+          const latest=unpub[unpub.length-1];
+          const prompt=buildFullPrompt(currentAi,currentAi.memory,plRef.current,ch,dayRef.current,trigger,null)+
+            `\n占い師として昨夜${latest.name}を占い「${latest.result}」という結果を得ました。今このタイミングでCOして結果を公開する発言（1〜2文）：`;
+          text=await callGemini(prompt)||`占い師としてCOします。昨夜${latest.name}さんを占いました。結果は${latest.result}でした。`;
           isSeer=true;
-          const updPl=plRef.current.map(p=>p.id===ai.id?{...p,publishedInfo:[...(p.publishedInfo||[]),...ai.knownInfo],claimedSeer:true}:p);
+          const updPl=plRef.current.map(p=>p.id===currentAi.id?{...p,memory:{...p.memory,claimedRole:"SEER"}}:p);
           setPlayers(updPl);plRef.current=updPl;
         }
       }
 
+      // 通常発言（LLM生成）
       if(!text){
-        text=await generateAISpeech(ai,pl,ch,dayRef.current,trigger);
-        if(!text) text=fallbackSpeech(ai,pl,trigger,dayRef.current);
+        const humanMsg=isHumanTrigger?trigger:null;
+        const prompt=buildFullPrompt(currentAi,currentAi.memory,plRef.current,ch,dayRef.current,trigger,humanMsg);
+        text=await callGemini(prompt);
+
+        // フォールバック
+        if(!text){
+          const isWolf=["WEREWOLF","MADMAN"].includes(currentAi.role);
+          const cands=plRef.current.filter(p=>p.alive&&p.id!==currentAi.id&&!currentAi.memory?.wolfAllies?.includes(p.name));
+          const target=cands[Math.floor(Math.random()*cands.length)];
+          if(trigger&&trigger.text.includes(currentAi.name)){
+            text=isWolf
+              ?`${trigger.sender}さん、私を疑う根拠はありますか？${target?.name}さんの方が気になります。`
+              :`${trigger.sender}さん、私は${ROLES[currentAi.role]?.name}として誠実に行動しています。`;
+          } else {
+            text=isWolf
+              ?`${target?.name}さんの発言に少し引っかかりを感じています。`
+              :`${target?.name}さんについて、もう少し詳しく聞かせてもらえますか？`;
+          }
+        }
       }
 
-      const m=mk({type:"ai",sender:ai.name,text,isHuman:false,isSeer});
+      // COの検出・メモリ更新
+      let updatedMemory={...currentAi.memory};
+      if(text.includes("占い師")&&(text.includes("です")||text.includes("として"))){
+        updatedMemory.claimedRole="SEER";
+      }
+      if(text.includes("霊媒師")&&(text.includes("です")||text.includes("として"))){
+        updatedMemory.claimedRole="MEDIUM";
+      }
+      // 疑い度の更新
+      plRef.current.filter(p=>p.alive&&p.id!==currentAi.id).forEach(p=>{
+        if(text.includes(p.name)&&/怪し|疑|人狼じゃ|処刑/.test(text)){
+          updatedMemory.suspects={...updatedMemory.suspects,[p.name]:Math.min(10,(updatedMemory.suspects[p.name]||3)+1)};
+        }
+      });
+      // 過去発言に追加
+      updatedMemory.pastStatements=[...updatedMemory.pastStatements,{day:dayRef.current,text}];
+
+      const updPl=plRef.current.map(p=>p.id===currentAi.id?{...p,memory:updatedMemory}:p);
+      setPlayers(updPl);plRef.current=updPl;
+
+      const m=mk({type:"ai",sender:currentAi.name,text,isHuman:false,isSeer});
       setChat(prev=>[...prev,m]);ch=[...ch,m];chRef.current=ch;
     }
     setThinking(false);procRef.current=false;
@@ -710,9 +839,10 @@ export default function App() {
   function sendChat(){
     if(!input.trim()||!myP?.alive)return;
     const txt=input.trim();setInput("");
+    userScrolledRef.current=false;
     const m=mk({type:"human",sender:myP.name,text:txt,isHuman:true});
     setChat(p=>[...p,m]);chRef.current=[...chRef.current,m];
-    setTimeout(()=>runAITurn(plRef.current,chRef.current,{sender:myP.name,text:txt}),400);
+    setTimeout(()=>runAITurn(plRef.current,chRef.current,{sender:myP.name,text:txt},true),400);
   }
 
   function doVotePhase(){
@@ -752,7 +882,7 @@ export default function App() {
     setPhase(PHASES.NIGHT);phRef.current=PHASES.NIGHT;
     setNightAct({});setSelTgt(null);
     addC({type:"gm",sender:"🎲 GM",text:"🌙 夜になりました。各役職は行動してください。",isHuman:false});
-    if(myP?.role==="WEREWOLF"&&myP.alive)addW({type:"wolf",sender:"🐺 人狼チャット",text:"今夜は誰を狙う？仲間で相談しよう。",isHuman:false});
+    if(myP?.role==="WEREWOLF"&&myP.alive)addW({type:"wolf",sender:"🐺 人狼チャット",text:"今夜は誰を狙う？作戦を立てよう。",isHuman:false});
     const acts={};
     pl.filter(p=>!p.isHuman&&p.alive&&["WEREWOLF","SEER","KNIGHT","ILLUSIONIST","WITCH"].includes(p.role)).forEach(ai=>{
       const cands=pl.filter(q=>q.alive&&q.id!==ai.id);if(!cands.length)return;
@@ -762,7 +892,12 @@ export default function App() {
         const safe=cands.filter(q=>!wolfIds.includes(q.id));
         const pool=prio.length?prio:safe.length?safe:cands;
         acts[ai.id]=pool[Math.floor(Math.random()*pool.length)].id;
-      }else{
+      } else if(ai.role==="ILLUSIONIST"){
+        // 幻術師は1回のみ使用可能
+        if(!ai.memory?.illusionistUsed){
+          acts[ai.id]=cands[Math.floor(Math.random()*cands.length)].id;
+        }
+      } else {
         acts[ai.id]=cands[Math.floor(Math.random()*cands.length)].id;
       }
     });
@@ -781,27 +916,63 @@ export default function App() {
 
   function resolveNight(acts,pl){
     let upd=[...pl];const prot=new Set();let redir=null;
-    Object.entries(acts).forEach(([aid,tid])=>{const a=upd.find(p=>p.id===aid);if(a?.role==="KNIGHT"&&a.alive)prot.add(tid);});
-    Object.entries(acts).forEach(([aid,tid])=>{const a=upd.find(p=>p.id===aid);if(a?.role==="ILLUSIONIST"&&a.alive&&!a.illusionistUsed){redir=tid;upd=upd.map(p=>p.id===aid?{...p,illusionistUsed:true}:p);}});
+    Object.entries(acts).forEach(([aid,tid])=>{
+      const a=upd.find(p=>p.id===aid);
+      if(a?.role==="KNIGHT"&&a.alive)prot.add(tid);
+    });
+    Object.entries(acts).forEach(([aid,tid])=>{
+      const a=upd.find(p=>p.id===aid);
+      if(a?.role==="ILLUSIONIST"&&a.alive&&!a.memory?.illusionistUsed){
+        redir=tid;
+        // 幻術師の能力使用済みフラグを立てる
+        upd=upd.map(p=>p.id===aid?{...p,memory:{...p.memory,illusionistUsed:true}}:p);
+      }
+    });
     const we=Object.entries(acts).filter(([aid])=>{const a=upd.find(p=>p.id===aid);return a?.role==="WEREWOLF"&&a.alive;});
     const results=[];
     if(we.length){
       const atk=redir||we[0][1];
       if(prot.has(atk)){results.push({t:"今夜は騎士が誰かを守りました！",tp:"g"});}
-      else{const v=upd.find(p=>p.id===atk);if(v?.alive){upd=upd.map(p=>p.id===atk?{...p,alive:false}:p);results.push({t:`${v.name} が人狼に襲われました。`,tp:"b"});}}
+      else{
+        const v=upd.find(p=>p.id===atk);
+        if(v?.alive){
+          upd=upd.map(p=>p.id===atk?{...p,alive:false}:p);
+          results.push({t:`${v.name} が人狼に襲われました。`,tp:"b"});
+        }
+      }
     }else{results.push({t:"今夜は平和でした。",tp:"i"});}
+
+    // 占い師の結果処理
     Object.entries(acts).forEach(([aid,tid])=>{
       const a=upd.find(p=>p.id===aid);
       if(a?.role==="SEER"&&a.alive){
         const tg=upd.find(p=>p.id===tid);
         if(tg){
           const res=tg.role==="WEREWOLF"?"人狼":"村人";
-          const info=`${tg.name}を占いました。結果は${res}でした。`;
-          upd=upd.map(p=>p.id===aid?{...p,knownInfo:[...(p.knownInfo||[]),info]}:p);
-          if(a.isHuman)results.push({t:`🔮 占い結果: ${info}`,tp:"i"});
+          const seerResult={name:tg.name,result:res,day:dayRef.current};
+          upd=upd.map(p=>p.id===aid?{...p,memory:{...p.memory,seerResults:[...p.memory.seerResults,seerResult]}}:p);
+          if(a.isHuman)results.push({t:`🔮 占い結果: ${tg.name}を占いました。結果は${res}でした。`,tp:"i"});
         }
       }
     });
+
+    // 霊媒師の結果処理（前日の処刑者の役職を確認）
+    const lastExecuted=execInfo;
+    if(lastExecuted){
+      Object.entries(acts).forEach(([aid])=>{
+        const a=upd.find(p=>p.id===aid);
+        if(a?.role==="MEDIUM"&&a.alive){
+          const executedPlayer=plRef.current.find(p=>p.name===lastExecuted.name);
+          if(executedPlayer){
+            const res=executedPlayer.role==="WEREWOLF"?"人狼":"村人";
+            const medResult={name:lastExecuted.name,result:res,day:dayRef.current};
+            upd=upd.map(p=>p.id===aid?{...p,memory:{...p.memory,mediumResults:[...p.memory.mediumResults,medResult]}}:p);
+            if(a.isHuman)results.push({t:`👻 霊媒結果: ${lastExecuted.name}の正体は${res}でした。`,tp:"i"});
+          }
+        }
+      });
+    }
+
     setPlayers(upd);plRef.current=upd;
     const nd=dayRef.current+1;setDay(nd);dayRef.current=nd;
     const w=checkWin(upd);
@@ -811,6 +982,7 @@ export default function App() {
         setPhase(PHASES.DAY);phRef.current=PHASES.DAY;
         setTimerSec(DAY_SEC);setTimerOn(true);
         setMyVote(null);setAiVotes({});setSelTgt(null);voteDoneRef.current=false;
+        userScrolledRef.current=false;
         const baker=upd.find(p=>p.role==="BAKER"&&p.alive);
         const msgs=[
           mk({type:"gm",sender:"🎲 GM",text:`☀️ 第${nd}日目の朝が始まりました。`,isHuman:false}),
@@ -818,7 +990,7 @@ export default function App() {
           ...(baker?[mk({type:"gm",sender:"🎲 GM",text:"🍞 どこからかパンの焼ける匂いがします。",isHuman:false})]:[]),
         ];
         setChat(p=>[...p,...msgs]);chRef.current=[...chRef.current,...msgs];
-        setTimeout(()=>runAITurn(upd,chRef.current,null),1500);
+        setTimeout(()=>runAITurn(upd,chRef.current,null,false),1500);
       },2500);
     }
   }
@@ -827,7 +999,7 @@ export default function App() {
     setPhase(PHASES.LOBBY);setPlayers([]);setChat([]);setWChat([]);
     setDay(1);setWinners([]);setEndPlayers([]);
     setTimerOn(false);setTimerSec(DAY_SEC);setHumanName("");
-    setExecInfo(null);voteDoneRef.current=false;
+    setExecInfo(null);voteDoneRef.current=false;userScrolledRef.current=false;
   }
 
   return (
@@ -897,7 +1069,9 @@ export default function App() {
                   <div>
                     <div className="mrn">{myP.name}（あなた）{!myP.alive&&" 💀"}</div>
                     <div className="mrd">役職: {ROLES[myP.role]?.name}</div>
-                    {myP.knownInfo?.length>0&&<div className="mri">📋 {myP.knownInfo[myP.knownInfo.length-1]}</div>}
+                    {myP.memory?.seerResults?.length>0&&(
+                      <div className="mri">📋 {myP.memory.seerResults.map(r=>`${r.name}:${r.result}`).join(" / ")}</div>
+                    )}
                   </div>
                 </div>
               )}
@@ -905,6 +1079,7 @@ export default function App() {
                 <div className="wolf-info">🐺 仲間の人狼: {wolfAllies.map(w=>w.name).join("、")}</div>
               )}
             </div>
+
             {isDead?(
               <div className="scroll" style={{flex:1}}>
                 <div className="dban">💀 死亡しました。観戦モードです。</div>
@@ -990,7 +1165,7 @@ export default function App() {
             <div className="exec-msg">
               村人たちの投票により、<strong>{execInfo.name}</strong> が処刑されました。<br/>
               <span style={{fontSize:".72rem",color:"var(--muted)",display:"block",marginTop:8}}>【投票結果】{execInfo.summary}</span>
-              <span style={{fontSize:".76rem",marginTop:12,display:"block",color:"#ffbbbb"}}>彼/彼女の役職は…秘密です。</span>
+              <span style={{fontSize:".76rem",marginTop:12,display:"block",color:"#ffbbbb"}}>役職は秘密です。</span>
             </div>
             <button className="btn bp" onClick={goToNight}>夜へ進む →</button>
           </div>
@@ -1014,18 +1189,25 @@ export default function App() {
                   <div className="ts tg mb2">
                     {myP.role==="SEER"&&"🔮 占う相手を選んでください（毎夜1人）"}
                     {myP.role==="KNIGHT"&&"🛡️ 守る相手を選んでください"}
-                    {myP.role==="ILLUSIONIST"&&"✨ 人狼の攻撃を向ける相手を選んでください"}
+                    {myP.role==="ILLUSIONIST"&&(myP.memory?.illusionistUsed?"✨ 幻術師の能力は使用済みです":"✨ 人狼の攻撃を向ける相手を選んでください（1回のみ）")}
                     {myP.role==="WITCH"&&"🧙 呪う相手を選んでください"}
                     {myP.role==="WEREWOLF"&&"🐺 襲撃する相手を選んでください"}
                   </div>
-                  <div className="pgrid">
-                    {alive.filter(p=>!p.isHuman).map(p=>(
-                      <div key={p.id} className={`pc sel${selTgt===p.id?" picked":""}`} onClick={()=>setSelTgt(p.id)}>
-                        <div className="pe">🤖</div><div className="pn">{p.name}</div>
+                  {!(myP.role==="ILLUSIONIST"&&myP.memory?.illusionistUsed)&&(
+                    <>
+                      <div className="pgrid">
+                        {alive.filter(p=>!p.isHuman).map(p=>(
+                          <div key={p.id} className={`pc sel${selTgt===p.id?" picked":""}`} onClick={()=>setSelTgt(p.id)}>
+                            <div className="pe">🤖</div><div className="pn">{p.name}</div>
+                          </div>
+                        ))}
                       </div>
-                    ))}
-                  </div>
-                  <button className="btn bp mt3" disabled={!selTgt} onClick={submitNight}>決定</button>
+                      <button className="btn bp mt3" disabled={!selTgt} onClick={submitNight}>決定</button>
+                    </>
+                  )}
+                  {myP.role==="ILLUSIONIST"&&myP.memory?.illusionistUsed&&(
+                    <button className="btn bg mt3" onClick={()=>resolveNight(nightAct,plRef.current)}>夜を終える</button>
+                  )}
                 </div>
               ):myP?.alive?(
                 <div className="ts tm">あなたの役職には夜の行動がありません。しばらくお待ちください…</div>
@@ -1049,7 +1231,7 @@ export default function App() {
                 ))}
               </div>
               <div className="card" style={{textAlign:"left"}}>
-                <div className="ct">全員の役職公開（ゲーム終了後のみ）</div>
+                <div className="ct">全員の役職公開</div>
                 <div className="rgrid">
                   {endPlayers.map(p=>(
                     <div key={p.id} className="rc">
