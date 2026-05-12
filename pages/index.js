@@ -512,7 +512,7 @@ export default function App() {
       autoRef.current=setTimeout(()=>{
         if(phRef.current===PHASES.DAY&&!procRef.current) runAITurn(plRef.current,chRef.current,null,false);
         sched();
-      },14000+Math.random()*10000);
+      },30000+Math.random()*15000);
     };
     sched();
     return()=>{if(autoRef.current)clearTimeout(autoRef.current);};
@@ -589,7 +589,7 @@ export default function App() {
     }
 
     for(let i=0;i<speakers.length;i++){
-      await wait(1100+Math.random()*1500);
+      await wait(2000+Math.random()*2000);
       if(phRef.current!==PHASES.DAY)break;
       const base=plRef.current.find(p=>p.id===speakers[i].id);
       if(!base||!base.alive)continue;
