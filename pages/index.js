@@ -24,46 +24,84 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
 // ─────────────────────────────────────────────────────────────
 // GEMINI
 // ─────────────────────────────────────────────────────────────
-// リトライ付きGemini呼び出し（429時は待機して再試行）
-async function gemini(prompt, retries = 3) {
+// OpenRouterフォールバック付きAPI呼び出し
+// Gemini → 429なら → OpenRouterに自動切り替え
+async function callLLM(prompt) {
+  // まずGeminiを試す
+  const geminiResult = await callGemini(prompt);
+  if (geminiResult) return geminiResult;
+  // Gemini失敗 → OpenRouterにフォールバック
+  return await callOpenRouter(prompt);
+}
+
+async function callGemini(prompt) {
   const key = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
   if (!key) return null;
-  for (let attempt = 0; attempt < retries; attempt++) {
-    try {
-      if (attempt > 0) await wait(4000 * attempt); // 429後は待機
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${key}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { maxOutputTokens: 400, temperature: 1.0, topP: 0.95 },
-            safetySettings: [
-              { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
-              { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
-            ],
-          }),
-        }
-      );
-      if (res.status === 429) continue; // レート制限 → リトライ
-      if (!res.ok) return null;
-      const data = await res.json();
-      let text = data.candidates?.[0]?.content?.parts?.[0]?.text || null;
-      if (!text) return null;
-      text = text.replace(/^[\s「」『』""''\n]+|[\s「」『』""''\n]+$/g, "").trim();
-      if (text.length > 250) text = text.slice(0, 250) + "。";
-      return text || null;
-    } catch { return null; }
-  }
-  return null;
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${key}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { maxOutputTokens: 400, temperature: 1.0, topP: 0.95 },
+          safetySettings: [
+            { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+            { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+          ],
+        }),
+      }
+    );
+    if (!res.ok) return null; // 429含む全エラーでOpenRouterへ
+    const data = await res.json();
+    let text = data.candidates?.[0]?.content?.parts?.[0]?.text || null;
+    if (!text) return null;
+    text = text.replace(/^[\s「」『』""''\n]+|[\s「」『』""''\n]+$/g, "").trim();
+    if (text.length > 250) text = text.slice(0, 250) + "。";
+    return text || null;
+  } catch { return null; }
+}
+
+async function callOpenRouter(prompt) {
+  const key = process.env.NEXT_PUBLIC_OPENROUTER_API_KEY;
+  if (!key) return null;
+  try {
+    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${key}`,
+        "HTTP-Referer": "https://wolf-iota-eosin.vercel.app",
+        "X-Title": "Werewolf Game",
+      },
+      body: JSON.stringify({
+        model: "meta-llama/llama-3.3-70b-instruct:free",
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 400,
+        temperature: 1.0,
+      }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    let text = data.choices?.[0]?.message?.content || null;
+    if (!text) return null;
+    text = text.replace(/^[\s「」『』""''\n]+|[\s「」『』""''\n]+$/g, "").trim();
+    if (text.length > 250) text = text.slice(0, 250) + "。";
+    return text || null;
+  } catch { return null; }
+}
+
+// 後方互換のためgemini関数も残す
+async function gemini(prompt) {
+  return await callLLM(prompt);
 }
 
 // 1回のAPIで複数AIの発言をまとめて生成（リクエスト節約）
 async function geminiMulti(speakers, allPlayers, chatLog, day, trigger) {
   if (!speakers.length) return [];
-  const key = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
-  if (!key) return [];
+  // callLLM経由でGemini→OpenRouterフォールバック
+
 
   const alive = allPlayers.filter(p => p.alive);
   const dead = allPlayers.filter(p => !p.alive);
@@ -111,42 +149,20 @@ ${speakers.map(sp => `${sp.name}：（発言内容）`).join("\n")}
 - 各自の性格に合わせた話し方
 - 過去発言と矛盾しない`;
 
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      if (attempt > 0) await wait(4000 * attempt);
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${key}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { maxOutputTokens: 600, temperature: 1.0, topP: 0.95 },
-            safetySettings: [
-              { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
-              { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
-            ],
-          }),
-        }
-      );
-      if (res.status === 429) continue;
-      if (!res.ok) return [];
-      const data = await res.json();
-      const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-      // 各プレイヤーの発言を抽出
-      return speakers.map(sp => {
-        const regex = new RegExp(`${sp.name}[：:」]([^\n]+)`);
-        const match = raw.match(regex);
-        let text = match ? match[1].trim() : null;
-        if (text) {
-          text = text.replace(/^[「」]+|[「」]+$/g, "").trim();
-          if (text.length > 250) text = text.slice(0, 250) + "。";
-        }
-        return { speaker: sp, text };
-      });
-    } catch { return []; }
-  }
-  return [];
+  // Gemini→OpenRouterフォールバックで1リクエスト
+  const raw = await callLLM(prompt);
+  if (!raw) return [];
+  return speakers.map(sp => {
+    const regex = new RegExp(`${sp.name}[：:」]([^\n]+)`);
+    const match = raw.match(regex);
+    let text = match ? match[1].trim() : null;
+    if (text) {
+      text = text.replace(/^[「」]+|[「」]+$/g, "").trim();
+      if (text.length > 250) text = text.slice(0, 250) + "。";
+    }
+    return { speaker: sp, text };
+  });
+}
 }
 
 // ─────────────────────────────────────────────────────────────
