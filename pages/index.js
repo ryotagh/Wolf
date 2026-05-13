@@ -109,13 +109,13 @@ ${speakerNames.map(n => `${n}：（発言）`).join("\n")}`;
   if (!raw) return [];
 
   return speakers.map(sp => {
-    // （思考：〜）部分を除去してセリフだけ抽出
-    const regex = new RegExp(`${sp.name}[：:」](.+)`);
+    // 「名前：セリフ」または「名前：「セリフ」」の両方に対応
+    const regex = new RegExp(`${sp.name}[：:]\s*[「]?([^」\n]+)[」]?`);
     const match = raw.match(regex);
     let text = match ? match[1].trim() : null;
     if (text) {
-      text = text.replace(/（思考：[^）]*）/g, "").trim(); // 思考プロセスを除去
-      text = text.replace(/^[「」（）]+|[「」（）]+$/g, "").trim();
+      text = text.replace(/（思考：[^）]*）/g, "").trim();
+      text = text.replace(/^[「」（）\s]+|[「」（）\s]+$/g, "").trim();
       if (text.length > 220) text = text.slice(0, 220) + "。";
     }
     return { speaker: sp, text };
