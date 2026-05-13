@@ -24,17 +24,8 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
 // ─────────────────────────────────────────────────────────────
 // GEMINI
 // ─────────────────────────────────────────────────────────────
-// OpenRouterフォールバック付きAPI呼び出し
-// Gemini → 429なら → OpenRouterに自動切り替え
-async function callLLM(prompt) {
-  // まずGeminiを試す
-  const geminiResult = await callGemini(prompt);
-  if (geminiResult) return geminiResult;
-  // Gemini失敗 → OpenRouterにフォールバック
-  return await callOpenRouter(prompt);
-}
-
-async function callGemini(prompt) {
+// Gemini API（429時はフォールバック発言を使う）
+async function gemini(prompt) {
   const key = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
   if (!key) return null;
   try {
@@ -53,7 +44,7 @@ async function callGemini(prompt) {
         }),
       }
     );
-    if (!res.ok) return null; // 429含む全エラーでOpenRouterへ
+    if (!res.ok) return null;
     const data = await res.json();
     let text = data.candidates?.[0]?.content?.parts?.[0]?.text || null;
     if (!text) return null;
@@ -63,39 +54,8 @@ async function callGemini(prompt) {
   } catch { return null; }
 }
 
-async function callOpenRouter(prompt) {
-  const key = process.env.NEXT_PUBLIC_OPENROUTER_API_KEY;
-  if (!key) return null;
-  try {
-    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${key}`,
-        "HTTP-Referer": "https://wolf-iota-eosin.vercel.app",
-        "X-Title": "Werewolf Game",
-      },
-      body: JSON.stringify({
-        model: "meta-llama/llama-3.3-70b-instruct:free",
-        messages: [{ role: "user", content: prompt }],
-        max_tokens: 400,
-        temperature: 1.0,
-      }),
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    let text = data.choices?.[0]?.message?.content || null;
-    if (!text) return null;
-    text = text.replace(/^[\s「」『』""''\n]+|[\s「」『』""''\n]+$/g, "").trim();
-    if (text.length > 250) text = text.slice(0, 250) + "。";
-    return text || null;
-  } catch { return null; }
-}
-
-// 後方互換のためgemini関数も残す
-async function gemini(prompt) {
-  return await callLLM(prompt);
-}
+// callLLMはgeminiの別名（将来の拡張用）
+async function callLLM(prompt) { return await gemini(prompt); }
 
 // 1回のAPIで複数AIの発言をまとめて生成（リクエスト節約）
 async function geminiMulti(speakers, allPlayers, chatLog, day, trigger) {
