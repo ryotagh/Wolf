@@ -24,37 +24,21 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
 // ─────────────────────────────────────────────────────────────
 // GEMINI
 // ─────────────────────────────────────────────────────────────
-// Gemini API（429時はフォールバック発言を使う）
+// サーバーサイドAPI経由でGeminiを呼ぶ（APIキーを隠す）
+// 429時はnullを返してフォールバック発言を使う
 async function gemini(prompt) {
-  const key = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
-  if (!key) return null;
   try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { maxOutputTokens: 400, temperature: 1.0, topP: 0.95 },
-          safetySettings: [
-            { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
-            { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
-          ],
-        }),
-      }
-    );
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt }),
+    });
     if (!res.ok) return null;
     const data = await res.json();
-    let text = data.candidates?.[0]?.content?.parts?.[0]?.text || null;
-    if (!text) return null;
-    text = text.replace(/^[\s「」『』""''\n]+|[\s「」『』""''\n]+$/g, "").trim();
-    if (text.length > 250) text = text.slice(0, 250) + "。";
-    return text || null;
+    return data.text || null;
   } catch { return null; }
 }
 
-// callLLMはgeminiの別名（将来の拡張用）
 async function callLLM(prompt) { return await gemini(prompt); }
 
 // 1回のAPIで複数AIの発言をまとめて生成（リクエスト節約）
@@ -1003,7 +987,7 @@ export default function App() {
                       onChange={e=>setInput(e.target.value)}
                       onKeyDown={e=>e.key==="Enter"&&sendChat()}
                       disabled={!myP?.alive}/>
-                    <button className="send-btn" onClick={sendChat} disabled={!myP?.alive||!input.trim()}>送信</button>
+                    <button className="send-btn" onClick={sendChat} disabled={!myP?.alive||!input.trim()||thinking}>送信</button>
                   </div>
                 </div>
                 <div className="vote-area">
