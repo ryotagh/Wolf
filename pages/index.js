@@ -608,9 +608,15 @@ export default function App() {
     const currentSpeakers=speakerList.map(sp=>plRef.current.find(p=>p.id===sp.id)).filter(p=>p&&p.alive);
     const results=await geminiMulti(currentSpeakers,plRef.current,ch,dayRef.current,trigger);
 
-    for(let i=0;i<results.length;i++){
+    // geminiMultiが失敗しても各スピーカーのフォールバックを必ず表示する
+    const finalResults=currentSpeakers.map(sp=>{
+      const found=results.find(r=>r.speaker?.id===sp.id);
+      return {speaker:sp, text:found?.text||null};
+    });
+
+    for(let i=0;i<finalResults.length;i++){
       if(phRef.current!==PHASES.DAY)break;
-      const {speaker:base,text:rawText}=results[i];
+      const {speaker:base,text:rawText}=finalResults[i];
       const text=rawText||fallback(base,plRef.current,trigger);
 
       // メモリ更新
