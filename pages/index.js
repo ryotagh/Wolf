@@ -122,37 +122,89 @@ function makePrompt(speaker, allPlayers, chatLog, day, trigger) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// FALLBACK（API失敗時）
+// FALLBACK（API失敗時）- バリエーション豊富版
 // ─────────────────────────────────────────────────────────────
-const FALLBACKS = {
-  WEREWOLF: (name, target, accuser) => accuser
-    ? [`${accuser}さん、その根拠はなんですか？私は普通にゲームしてるだけです。`, `${accuser}さんこそ、なぜ私ばかり疑うんでしょう。`]
-    : [`${target}さんの動きがどうも引っかかります。みなさんはどう思いますか？`, `${target}さん、さっきの発言もう少し詳しく説明してもらえますか？`],
-  SEER: (name, info) => info
-    ? [`占い師として報告します。${info}`, `情報を共有します。${info}`]
-    : [`まだはっきりしたことは言えませんが、気になる人がいます。`, `様子を見ながら判断しています。`],
-  DEFAULT: (name, target) => [
-    `${target}さん、なぜそういう発言をしたのか聞かせてもらえますか？`,
-    `${target}さんについて、もう少し情報が欲しいです。`,
-    `今の議論の流れ、少し整理しませんか？`,
-  ],
-};
-
 function fallback(speaker, allPlayers, trigger) {
   const isWolf = ["WEREWOLF","MADMAN"].includes(speaker.role);
   const alive = allPlayers.filter(p => p.alive && p.id !== speaker.id);
-  const wolfAllies = (speaker.memory?.wolfAllies || []);
+  const wolfAllies = speaker.memory?.wolfAllies || [];
   const safeTargets = alive.filter(p => !wolfAllies.includes(p.name));
-  const target = safeTargets[Math.floor(Math.random() * safeTargets.length)]?.name || alive[0]?.name || "？";
+  const t1 = safeTargets[Math.floor(Math.random() * safeTargets.length)]?.name || alive[0]?.name || "？";
+  const t2 = safeTargets.filter(p=>p.name!==t1)[Math.floor(Math.random()*Math.max(1,safeTargets.length-1))]?.name || t1;
   const accuser = trigger?.text.includes(speaker.name) ? trigger.sender : null;
+  const triggerSender = trigger?.sender;
 
-  if (isWolf) return rnd(FALLBACKS.WEREWOLF(speaker.name, target, accuser));
+  // 直前発言への反応
+  if (triggerSender && !trigger.text.includes(speaker.name)) {
+    if (isWolf) {
+      return rnd([
+        `${triggerSender}さんの言う通りかもしれませんが、私は${t1}さんの方が気になっています。`,
+        `${triggerSender}さん、それより${t1}さんの動きはどう思いますか？`,
+        `${triggerSender}さんの意見は分かります。でも${t1}さんも要チェックだと思います。`,
+        `なるほど${triggerSender}さん。私の見立てでは${t1}さんが怪しいです。`,
+      ]);
+    }
+    return rnd([
+      `${triggerSender}さん、その点は重要ですね。${t1}さんについても気になっています。`,
+      `${triggerSender}さんの意見に同感です。${t1}さんの発言も確認したいです。`,
+      `${triggerSender}さん、もう少し詳しく聞かせてもらえますか？`,
+      `${triggerSender}さん、確かに。${t1}さんと${t2}さんのどちらが怪しいか絞りましょう。`,
+    ]);
+  }
+
+  // 名指しされた場合
+  if (accuser) {
+    if (isWolf) {
+      return rnd([
+        `${accuser}さん、根拠はありますか？私は村人として普通に行動しています。`,
+        `${accuser}さん、なぜ私なんですか？${t1}さんの方がよほど怪しいと思いますが。`,
+        `${accuser}さん、証拠もなく疑うのは議論を乱すだけですよ。`,
+        `私を疑うなら${t1}さんも疑ってください。${accuser}さんの基準が分かりません。`,
+      ]);
+    }
+    return rnd([
+      `${accuser}さん、私は村人です！なぜ疑われるのか理解できません。`,
+      `${accuser}さん、私への疑いの根拠を教えてください。`,
+      `${accuser}さん、私より${t1}さんを見てください。`,
+    ]);
+  }
+
+  // 占い師固有
   if (speaker.role === "SEER") {
     const latest = speaker.memory?.seerResults?.slice(-1)[0];
-    const info = latest ? `${latest.name}さんを占いました。結果は${latest.result}でした。` : null;
-    return rnd(FALLBACKS.SEER(speaker.name, info));
+    if (latest) {
+      return rnd([
+        `占い師として報告します。${latest.name}さんを占いました。結果は${latest.result}でした。`,
+        `重要な情報があります。${latest.name}さんは${latest.result}です。`,
+        `昨夜${latest.name}さんを占いました。${latest.result}という結果が出ています。`,
+      ]);
+    }
+    return rnd([
+      `私は状況を見ながら慎重に判断しています。${t1}さんが少し気になります。`,
+      `まだ確定的なことは言えませんが、${t1}さんの動きを注目しています。`,
+    ]);
   }
-  return rnd(FALLBACKS.DEFAULT(speaker.name, target));
+
+  // 自発的な発言
+  if (isWolf) {
+    return rnd([
+      `${t1}さんの発言、少し矛盾していませんか？説明してほしいです。`,
+      `私は村人ですが、${t1}さんが一番怪しいと思っています。`,
+      `${t1}さんと${t2}さん、どちらかが人狼だと思います。`,
+      `${t1}さん、昨日から発言が不自然です。弁明してください。`,
+      `みなさん、${t1}さんに注目してください。行動が怪しいです。`,
+    ]);
+  }
+
+  return rnd([
+    `${t1}さん、あなたの考えを聞かせてください。`,
+    `${t1}さんと${t2}さん、今日はどちらかを処刑すべきだと思います。`,
+    `議論が進んでいませんね。${t1}さんを中心に話しましょう。`,
+    `${t1}さんの発言が少ない気がします。何か隠していますか？`,
+    `私は${t1}さんへの疑いが強いです。みなさんはどうですか？`,
+    `そろそろ絞り込まないといけません。${t1}さんが最も怪しいです。`,
+    `${t1}さん、正直に話してもらえますか？`,
+  ]);
 }
 
 // ─────────────────────────────────────────────────────────────
