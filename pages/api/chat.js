@@ -1,36 +1,41 @@
+import { GoogleGenerativeAI } from "@google/generative-ai";
+
 export default async function handler(req, res) {
-  // キャッシュ完全無効化
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
   res.setHeader("Pragma", "no-cache");
 
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
+
   const { prompt } = req.body;
   if (!prompt) return res.status(400).json({ error: "prompt required" });
-  const key = process.env.GEMINI_API_KEY;
-  if (!key) return res.status(500).json({ error: "no key" });
+
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: "API key not configured" });
+
   try {
-    const r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { maxOutputTokens: 80, temperature: 0.9, topP: 0.9 },
-          safetySettings: [
-            { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
-            { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
-          ],
-        }),
-      }
-    );
-    if (r.status === 429) return res.status(429).json({ error: "rate_limit" });
-    if (!r.ok) return res.status(r.status).json({ error: "gemini_error" });
-    const data = await r.json();
-    let text = data.candidates?.[0]?.content?.parts?.[0]?.text || null;
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({
+      model: "gemini-2.0-flash",
+      generationConfig: {
+        maxOutputTokens: 80,
+        temperature: 0.9,
+        topP: 0.9,
+      },
+    });
+
+    const result = await model.generateContent(prompt);
+    let text = result.response.text().trim();
     if (!text) return res.status(200).json({ text: null });
     text = text.replace(/^[\s「」『』""''\n]+|[\s「」『』""''\n]+$/g, "").trim();
     if (text.length > 200) text = text.slice(0, 200) + "。";
     return res.status(200).json({ text });
-  } catch { return res.status(500).json({ error: "failed" }); }
+  } catch (error) {
+    console.error("Gemini error:", error?.message || error);
+    if (error?.status === 429 || String(error?.message).includes("429")) {
+      return res.status(429).json({ error: "rate_limit" });
+    }
+    return res.status(500).json({ error: "failed" });
+  }
 }
