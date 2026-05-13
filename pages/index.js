@@ -41,173 +41,85 @@ async function gemini(prompt) {
 
 async function callLLM(prompt) { return await gemini(prompt); }
 
-// 1回のAPIで複数AIの発言をまとめて生成（リクエスト節約）
+// 複数AIの発言を1リクエストで生成（軽量版）
 async function geminiMulti(speakers, allPlayers, chatLog, day, trigger) {
   if (!speakers.length) return [];
-  // callLLM経由でGemini→OpenRouterフォールバック
 
+  const alive = allPlayers.filter(p => p.alive).map(p => p.name).join("、");
+  const log = chatLog.filter(m => m.type !== "gm").slice(-3)
+    .map(m => `${m.sender}:${m.text}`).join(" / ");
+  const triggerLine = trigger ? `直前:${trigger.sender}「${trigger.text}」` : "";
 
-  const alive = allPlayers.filter(p => p.alive);
-  const dead = allPlayers.filter(p => !p.alive);
-  const log = chatLog.filter(m => m.type !== "gm").slice(-8)
-    .map(m => `${m.sender}「${m.text}」`).join("\n");
-  const triggerLine = trigger ? `直前の発言：${trigger.sender}「${trigger.text}」` : "";
-
-  // 全員の情報をコンパクトにまとめる
-  const speakerInfos = speakers.map(sp => {
+  const speakerLines = speakers.map(sp => {
     const isWolf = ["WEREWOLF","MADMAN"].includes(sp.role);
-    const wolfAllies = isWolf && sp.memory?.wolfAllies?.length
-      ? `（仲間の人狼：${sp.memory.wolfAllies.join("、")}）` : "";
+    const wolfInfo = isWolf && sp.memory?.wolfAllies?.length
+      ? `仲間の人狼:${sp.memory.wolfAllies.join("、")}` : "";
     const seerInfo = sp.role === "SEER" && sp.memory?.seerResults?.length
-      ? `占い結果：${sp.memory.seerResults.map(r=>`${r.name}→${r.result}`).join("、")}` : "";
-    const suspects = Object.entries(sp.memory?.suspects||{}).filter(([,v])=>v>=5).map(([n])=>n).join("、")||"なし";
-    const pastSaid = (sp.memory?.said||[]).slice(-3).join(" / ") || "なし";
-    const roleGoal = isWolf
-      ? `人狼。村人のふりをして${wolfAllies}村人陣営を処刑に誘導する。嘘をつく。`
-      : sp.role === "SEER" ? `占い師。${seerInfo}。適切なタイミングでCOして情報を共有する。`
-      : `${sp.memory?.role || sp.role}（村人陣営）。人狼を見つけて処刑に誘導する。`;
-    return `【${sp.name}】役割：${roleGoal} 性格：${sp.personality} 疑っている人：${suspects} 過去発言：${pastSaid}`;
+      ? `占い結果:${sp.memory.seerResults.map(r=>`${r.name}=${r.result}`).join(",")}` : "";
+    const roleGoal = isWolf ? `人狼。村人のふり。${wolfInfo}`
+      : sp.role === "SEER" ? `占い師。${seerInfo}`
+      : sp.role === "MADMAN" ? `狂人。混乱させる。`
+      : `${ROLES[sp.role]?.name}。人狼を探す。`;
+    const lastSaid = (sp.memory?.said||[]).slice(-1)[0] || "";
+    return `${sp.name}(${roleGoal} 性格:${sp.personality} 直前発言:${lastSaid})`;
   }).join("\n");
 
-  const prompt = `あなたは人狼ゲームのGMです。以下のプレイヤーそれぞれが、今この状況でどう発言するか生成してください。
-
-ゲーム状況：${day}日目の昼
-生存者：${alive.map(p=>p.name).join("、")}
-死亡者：${dead.length?dead.map(p=>p.name).join("、"):"なし"}
+  const prompt = `人狼ゲーム${day}日目。生存:${alive}
 ${triggerLine}
+直近会話:${log||"なし"}
 
-直近の会話：
-${log || "（まだなし）"}
+以下のプレイヤーがそれぞれ1〜2文で発言する。役職に沿い、直前の会話に反応し、具体的な名前と根拠を出せ。
+${speakerLines}
 
-各プレイヤーの情報：
-${speakerInfos}
+出力形式（この形式のみ。他の文字不要）:
+${speakers.map(sp=>`${sp.name}：（発言）`).join("\n")}`;
 
-【出力形式】必ず以下の形式で各プレイヤーの発言を出力してください。他の文字は一切不要。
-${speakers.map(sp => `${sp.name}：（発言内容）`).join("\n")}
-
-【発言のルール】
-- 直前の会話・質問に必ず反応する（無視禁止）
-- 具体的な名前と根拠を含める（抽象的な発言禁止）
-- 役職の目標に沿った戦略的な発言
-- 1〜2文の自然な日本語
-- 各自の性格に合わせた話し方
-- 過去発言と矛盾しない`;
-
-  // Gemini→OpenRouterフォールバックで1リクエスト
   const raw = await callLLM(prompt);
   if (!raw) return [];
   return speakers.map(sp => {
     const regex = new RegExp(`${sp.name}[：:」]([^\n]+)`);
     const match = raw.match(regex);
     let text = match ? match[1].trim() : null;
-    if (text) {
-      text = text.replace(/^[「」]+|[「」]+$/g, "").trim();
-      if (text.length > 250) text = text.slice(0, 250) + "。";
-    }
+    if (text) text = text.replace(/^[「」]+|[「」]+$/g, "").trim();
     return { speaker: sp, text };
   });
 }
 
+}
+
 // ─────────────────────────────────────────────────────────────
-// CORE PROMPT - 自由に考えさせる
+// CORE PROMPT - 超軽量版（TPM節約）
 // ─────────────────────────────────────────────────────────────
 function makePrompt(speaker, allPlayers, chatLog, day, trigger) {
-  const alive = allPlayers.filter(p => p.alive);
-  const dead = allPlayers.filter(p => !p.alive);
   const isWolf = ["WEREWOLF","MADMAN"].includes(speaker.role);
-  const isSeer = speaker.role === "SEER";
-  const isMedium = speaker.role === "MEDIUM";
   const mem = speaker.memory;
+  const alive = allPlayers.filter(p => p.alive).map(p => p.name).join("、");
 
-  // 直近10発言
-  const log = chatLog.filter(m => m.type !== "gm").slice(-10)
-    .map(m => `${m.sender}「${m.text}」`).join("\n");
+  // 直近3件だけ
+  const log = chatLog.filter(m => m.type !== "gm").slice(-3)
+    .map(m => `${m.sender}:${m.text}`).join(" / ");
 
-  // 自分の過去発言（直近5件）
-  const past = (mem.said || []).slice(-5).map(s => `・${s}`).join("\n") || "なし";
+  // 自分の情報だけ（他全員は不要）
+  const wolfInfo = isWolf && mem.wolfAllies?.length
+    ? `仲間の人狼:${mem.wolfAllies.join("、")}` : "";
+  const seerInfo = speaker.role === "SEER" && mem.seerResults?.length
+    ? `占い結果:${mem.seerResults.map(r=>`${r.name}=${r.result}`).join(",")}` : "";
+  const suspects = Object.entries(mem.suspects||{}).filter(([,v])=>v>=5).map(([n])=>n).join("、");
+  const lastSaid = (mem.said||[]).slice(-2).join(" / ");
 
-  // 占い結果
-  const seerLog = (mem.seerResults || []).map(r => `${r.day}日目夜：${r.name}→${r.result}`).join("、") || "なし";
+  const triggerLine = trigger ? `直前:${trigger.sender}「${trigger.text}」` : "";
 
-  // 霊媒結果
-  const medLog = (mem.medResults || []).map(r => `${r.name}→${r.result}`).join("、") || "なし";
+  const roleGoal = isWolf
+    ? `人狼。村人のふりをする。${wolfInfo}`
+    : speaker.role === "SEER" ? `占い師。${seerInfo}`
+    : speaker.role === "MADMAN" ? `狂人。村人陣営を混乱させる。`
+    : `${ROLES[speaker.role]?.name}。人狼を探す。`;
 
-  // 人狼専用：仲間情報
-  const wolfSection = isWolf && mem.wolfAllies?.length > 0
-    ? `\n【仲間の人狼（これは絶対に秘密。口外厳禁）】${mem.wolfAllies.join("、")}`
-    : "";
-
-  // CO状況
-  const coInfo = allPlayers
-    .filter(p => p.memory?.claimedRole)
-    .map(p => `${p.name}→${ROLES[p.memory.claimedRole]?.name}とCO`).join("、") || "なし";
-
-  // 直前発言
-  const triggerLine = trigger
-    ? `\n直前の発言（これに必ず反応すること）：\n${trigger.sender}「${trigger.text}」`
-    : "";
-
-  // 役職別の目標と情報
-  let roleInfo = "";
-  if (speaker.role === "WEREWOLF") {
-    roleInfo = `
-あなたは人狼です。目標：村人陣営を処刑に誘導して人狼が生き残ること。
-仲間の人狼を守れ。自分への疑いは他の村人に向けろ。嘘をつけ。
-偽占い師として名乗り出ることも有効（タイミングを見て）。
-絶対に人狼だとバレるな。村人として自然に振る舞え。${wolfSection}`;
-  } else if (speaker.role === "MADMAN") {
-    roleInfo = `
-あなたは狂人です。人狼陣営を勝たせることが目標（人狼が誰かは知らない）。
-村人陣営を混乱させろ。偽情報を流せ。偽COも有効。`;
-  } else if (isSeer) {
-    roleInfo = `
-あなたは占い師です。占い結果：${seerLog}
-結果を持っているなら適切なタイミングでCOして共有すること。
-偽占い師が出たら「本物は私だ」と主張せよ。
-まだ結果がないなら潜伏してもよい。`;
-  } else if (isMedium) {
-    roleInfo = `
-あなたは霊媒師です。処刑された人の正体がわかる。霊媒結果：${medLog}
-結果があれば公開を検討せよ。`;
-  } else if (speaker.role === "KNIGHT") {
-    roleInfo = `あなたは騎士です。夜に誰かを守れる。役職は隠しながら議論に参加せよ。`;
-  } else {
-    roleInfo = `あなたは${ROLES[speaker.role]?.name}（村人陣営）です。人狼を見つけて処刑に誘導せよ。`;
-  }
-
-  return `あなたは人狼ゲーム中のプレイヤー「${speaker.name}」です。
-今から、このゲームの中で「${speaker.name}」として発言してください。
-
-${roleInfo}
-
-【現在の状況】
-・${day}日目の昼
-・生存：${alive.map(p=>p.name).join("、")}
-・死亡：${dead.length?dead.map(p=>p.name).join("、"):"なし"}
-・役職CO状況：${coInfo}
-
-【自分の記憶】
-・自分の過去発言：
-${past}
-・占い結果：${seerLog}
-・霊媒結果：${medLog}
-・疑っている人：${Object.entries(mem.suspects||{}).filter(([,v])=>v>=4).map(([n])=>n).join("、")||"特になし"}
-・信頼している人：${Object.entries(mem.trusted||{}).filter(([,v])=>v>=4).map(([n])=>n).join("、")||"特になし"}
-${triggerLine}
-
-【直近の会話】
-${log || "（まだ発言なし）"}
-
-【重要な指示】
-1. 直前の発言・質問には必ず反応すること。無視厳禁。
-2. 「${speaker.name}さんへの疑いが強まっています」のような抽象的な発言は禁止。必ず具体的な名前と根拠を出せ。
-3. 自分の過去発言と矛盾するな。
-4. 実際に起きていないことを「昨日〜した」と言うな。
-5. 発言は1〜2文の自然な日本語のみ。余計な記号不要。
-6. 毎回違う言い方をすること。同じ表現を繰り返すな。
-7. ${speaker.personality}な性格で話すこと。
-
-今この瞬間の「${speaker.name}」の発言：`;
+  return `人狼ゲーム${day}日目。あなたは${speaker.name}（${roleGoal}）。
+生存:${alive} ${triggerLine}
+直近会話:${log||"なし"}
+自分の過去発言:${lastSaid||"なし"} 疑い:${suspects||"なし"}
+性格:${speaker.personality}。1〜2文で自然に発言。根拠を具体的に。同じ表現禁止。`;
 }
 
 // ─────────────────────────────────────────────────────────────
