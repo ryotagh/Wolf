@@ -41,46 +41,83 @@ async function gemini(prompt) {
 
 async function callLLM(prompt) { return await gemini(prompt); }
 
-// 複数AIの発言を1リクエストで生成（軽量版）
+// 台本方式：1回のAPIで複数人の掛け合いを生成
+// 全員が前の発言を知った状態で喋るので会話が噛み合う
 async function geminiMulti(speakers, allPlayers, chatLog, day, trigger) {
   if (!speakers.length) return [];
 
   const alive = allPlayers.filter(p => p.alive).map(p => p.name).join("、");
-  const log = chatLog.filter(m => m.type !== "gm").slice(-3)
-    .map(m => `${m.sender}:${m.text}`).join(" / ");
-  const triggerLine = trigger ? `直前:${trigger.sender}「${trigger.text}」` : "";
+  const dead = allPlayers.filter(p => !p.alive).map(p => p.name).join("、") || "なし";
 
+  // 直近5件の会話ログ
+  const log = chatLog.filter(m => m.type !== "gm").slice(-5)
+    .map(m => `${m.sender}：「${m.text}」`).join("\n") || "（まだなし）";
+
+  // 直前発言
+  const triggerLine = trigger ? `\n★直前の発言（必ず反応すること）：${trigger.sender}「${trigger.text}」` : "";
+
+  // 公開情報（占いCO・霊媒COなど）
+  const coInfo = allPlayers
+    .filter(p => p.memory?.claimedRole)
+    .map(p => `${p.name}が${ROLES[p.memory.claimedRole]?.name}とCO`)
+    .join("、") || "なし";
+
+  // 各スピーカーの情報（最小限）
   const speakerLines = speakers.map(sp => {
     const isWolf = ["WEREWOLF","MADMAN"].includes(sp.role);
     const wolfInfo = isWolf && sp.memory?.wolfAllies?.length
-      ? `仲間の人狼:${sp.memory.wolfAllies.join("、")}` : "";
-    const seerInfo = sp.role === "SEER" && sp.memory?.seerResults?.length
-      ? `占い結果:${sp.memory.seerResults.map(r=>`${r.name}=${r.result}`).join(",")}` : "";
-    const roleGoal = isWolf ? `人狼。村人のふり。${wolfInfo}`
-      : sp.role === "SEER" ? `占い師。${seerInfo}`
-      : sp.role === "MADMAN" ? `狂人。混乱させる。`
-      : `${ROLES[sp.role]?.name}。人狼を探す。`;
-    const lastSaid = (sp.memory?.said||[]).slice(-1)[0] || "";
-    return `${sp.name}(${roleGoal} 性格:${sp.personality} 直前発言:${lastSaid})`;
+      ? `（仲間の人狼は${sp.memory.wolfAllies.join("、")}）` : "";
+    const seerResult = sp.role === "SEER" && sp.memory?.seerResults?.length
+      ? `占い済み：${sp.memory.seerResults.map(r=>`${r.name}→${r.result}`).join("、")}` : "";
+    const suspects = Object.entries(sp.memory?.suspects||{})
+      .filter(([,v])=>v>=4).map(([n])=>n).join("、") || "特になし";
+    const roleDesc = isWolf
+      ? `人狼（村人のふりをする。嘘をつく。仲間を守る${wolfInfo}）`
+      : sp.role === "SEER" ? `占い師（${seerResult || "まだ結果なし"}。適切なタイミングでCO）`
+      : sp.role === "MADMAN" ? `狂人（村人陣営を混乱させる）`
+      : `${ROLES[sp.role]?.name}（人狼を探す）`;
+    return `・${sp.name}｜役割：${roleDesc}｜性格：${sp.personality}｜疑っている人：${suspects}`;
   }).join("\n");
 
-  const prompt = `人狼ゲーム${day}日目。生存:${alive}
-${triggerLine}
-直近会話:${log||"なし"}
+  const speakerNames = speakers.map(sp => sp.name);
 
-以下のプレイヤーがそれぞれ1〜2文で発言する。役職に沿い、直前の会話に反応し、具体的な名前と根拠を出せ。
+  const prompt = `あなたは人狼ゲームの台本作家です。以下の状況で、登場人物たちのリアルな掛け合いを書いてください。
+
+【ゲーム状況】
+${day}日目の昼。生存：${alive}。死亡：${dead}。
+役職CO状況：${coInfo}
+${triggerLine}
+
+【直近の会話】
+${log}
+
+【今回発言する登場人物】
 ${speakerLines}
 
-出力形式（この形式のみ。他の文字不要）:
-${speakers.map(sp=>`${sp.name}：（発言）`).join("\n")}`;
+【台本を書く上での絶対ルール】
+1. 直前の会話・質問に必ず反応すること（無視禁止）
+2. 2人目は1人目の発言を受けて返すこと（掛け合いにすること）
+3. 抽象的な「様子がおかしい」は禁止。必ず具体的な名前と根拠を出す
+4. 役割に忠実に（人狼は嘘をつく、占い師は情報を出す）
+5. 各発言は1〜2文の自然な日本語のみ
+6. 思考プロセスがあれば（思考：〜）として先に書く（表示時にカットします）
+
+【出力形式】この形式のみ。余計な文字不要。
+${speakerNames.map(n => `${n}：（発言）`).join("\n")}`;
 
   const raw = await callLLM(prompt);
   if (!raw) return [];
+
   return speakers.map(sp => {
-    const regex = new RegExp(`${sp.name}[：:」]([^\n]+)`);
+    // （思考：〜）部分を除去してセリフだけ抽出
+    const regex = new RegExp(`${sp.name}[：:」](.+)`);
     const match = raw.match(regex);
     let text = match ? match[1].trim() : null;
-    if (text) text = text.replace(/^[「」]+|[「」]+$/g, "").trim();
+    if (text) {
+      text = text.replace(/（思考：[^）]*）/g, "").trim(); // 思考プロセスを除去
+      text = text.replace(/^[「」（）]+|[「」（）]+$/g, "").trim();
+      if (text.length > 220) text = text.slice(0, 220) + "。";
+    }
     return { speaker: sp, text };
   });
 }
@@ -692,7 +729,7 @@ export default function App() {
 
       const m=mk({type:"ai",sender:base.name,text,isHuman:false,isSeer:false});
       setChat(prev=>[...prev,m]);ch=[...ch,m];chRef.current=ch;
-      if(i<results.length-1) await wait(1500+Math.random()*1000);
+      if(i<finalResults.length-1) await wait(2500+Math.random()*2000); // 時間差表示
     }
     setThinking(false);procRef.current=false;
   }
