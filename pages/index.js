@@ -17,7 +17,7 @@ const ROLES = {
 const PHASES = { LOBBY:"LOBBY", ROLE_SETUP:"ROLE_SETUP", DAY:"DAY", VOTE:"VOTE", EXECUTION:"EXECUTION", NIGHT:"NIGHT", GAME_OVER:"GAME_OVER" };
 const AI_NAMES = ["きなこ","ぷち","ココア","つくね","うさぎ","くりまんじゅう","ハチワレ","ちいかわ","鎧さん"];
 const DEFAULT_CFG = { VILLAGER:3, WEREWOLF:2, SEER:1, KNIGHT:1, MADMAN:1 };
-const DAY_SEC = 150;
+const DAY_SEC = 180;
 const rnd = a => a[Math.floor(Math.random() * a.length)];
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
@@ -97,10 +97,12 @@ ${speakerLines}
 【台本を書く上での絶対ルール】
 1. 直前の会話・質問に必ず反応すること（無視禁止）
 2. 2人目は1人目の発言を受けて返すこと（掛け合いにすること）
-3. 抽象的な「様子がおかしい」は禁止。必ず具体的な名前と根拠を出す
-4. 役割に忠実に（人狼は嘘をつく、占い師は情報を出す）
-5. 各発言は1〜2文の自然な日本語のみ
-6. 思考プロセスがあれば（思考：〜）として先に書く（表示時にカットします）
+3. 各発言は必ず20文字以上。1文字・1単語の発言は絶対禁止
+4. 抽象的な「様子がおかしい」だけは禁止。具体的な名前と根拠を必ず出す
+5. 「発言した」「喋った」だけを理由に疑うのは禁止。論理的根拠が必要
+6. 役割に忠実に（人狼は村人のふりをしながら特定の人を疑う、占い師は情報を活用）
+7. 各発言は1〜2文の自然な日本語のみ
+8. 思考プロセスがあれば（思考：〜）として先に書く（表示時にカットします）
 
 【出力形式】この形式のみ。余計な文字不要。
 ${speakerNames.map(n => `${n}：（発言）`).join("\n")}`;
@@ -155,7 +157,14 @@ function makePrompt(speaker, allPlayers, chatLog, day, trigger) {
 生存:${alive} ${triggerLine}
 直近会話:${log||"なし"}
 自分の過去発言:${lastSaid||"なし"} 疑い:${suspects||"なし"}
-性格:${speaker.personality}。1〜2文で自然に発言。根拠を具体的に。同じ表現禁止。`;
+性格:${speaker.personality}。
+
+絶対守ること：
+- 必ず20文字以上で発言する（1文字・1単語は禁止）
+- 直前の会話に必ず反応する（無視禁止）
+- 具体的な名前と根拠を出す（「様子がおかしい」だけは禁止）
+- 疑うなら理由を言う（「発言した」だけでは疑う理由にならない）
+- 1〜2文の自然な日本語で話す`;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -325,7 +334,7 @@ function decideVote(ai, allPlayers, chatLog) {
     const wolfNames=[...(ai.memory?.wolfAllies||[]),ai.name];
     const targets=cands.filter(p=>!wolfNames.includes(p.name));
     const nonHuman=targets.filter(p=>!p.isHuman);
-    const pool=nonHuman.length&&Math.random()>0.3?nonHuman:targets;
+    const pool=nonHuman.length&&Math.random()>0.1?nonHuman:targets; // 人間を狙う確率10%以下
     return(pool.length?pool:cands)[Math.floor(Math.random()*(pool.length||cands.length))].id;
   }
   // 村人陣営：占い結果優先→会話での疑い頻度→自分の疑い度
@@ -579,7 +588,7 @@ export default function App() {
       autoRef.current=setTimeout(()=>{
         if(phRef.current===PHASES.DAY&&!procRef.current) runAITurn(plRef.current,chRef.current,null,false);
         sched();
-      },45000+Math.random()*15000);
+      },25000+Math.random()*15000);
     };
     sched();
     return()=>{if(autoRef.current)clearTimeout(autoRef.current);};
