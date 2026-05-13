@@ -579,7 +579,7 @@ export default function App() {
       autoRef.current=setTimeout(()=>{
         if(phRef.current===PHASES.DAY&&!procRef.current) runAITurn(plRef.current,chRef.current,null,false);
         sched();
-      },20000+Math.random()*10000);
+      },45000+Math.random()*15000);
     };
     sched();
     return()=>{if(autoRef.current)clearTimeout(autoRef.current);};
@@ -616,20 +616,26 @@ export default function App() {
 
   async function runOpenings(pl,ch){
     if(procRef.current)return;
-    procRef.current=true;setThinking(true);
-    const ais=[...pl.filter(p=>!p.isHuman&&p.alive)].sort(()=>Math.random()-.5).slice(0,2);
+    procRef.current=true;
+    // 初回挨拶はGemini不使用（リクエスト節約）
+    const greetings=[
+      n=>`${n}です。よろしくお願いします。`,
+      n=>`${n}と申します。みんなで人狼を見つけましょう。`,
+      n=>`${n}です。慎重に議論しましょう。`,
+      n=>`${n}です！絶対に人狼を見つけます！`,
+      n=>`よろしく、${n}です。`,
+    ];
+    const ais=[...pl.filter(p=>!p.isHuman&&p.alive)].sort(()=>Math.random()-.5).slice(0,3);
     for(let i=0;i<ais.length;i++){
-      await wait(700+Math.random()*900);
+      await wait(600+Math.random()*800);
       const ai=ais[i];
-      const pr=makePrompt(ai,pl,ch,1,null)+"\n最初の挨拶（1〜2文）：";
-      let text=await gemini(pr);
-      if(!text)text=`${ai.name}です。よろしくお願いします。`;
+      const text=greetings[Math.floor(Math.random()*greetings.length)](ai.name);
       const m=mk({type:"ai",sender:ai.name,text,isHuman:false});
       const updPl=plRef.current.map(p=>p.id===ai.id?{...p,memory:{...p.memory,said:[...(p.memory.said||[]),text]}}:p);
       setPlayers(updPl);plRef.current=updPl;
       setChat(p=>[...p,m]);ch=[...ch,m];chRef.current=ch;
     }
-    setThinking(false);procRef.current=false;
+    procRef.current=false;
   }
 
   async function runAITurn(pl,ch,trigger,fromHuman){
@@ -638,20 +644,21 @@ export default function App() {
     const aiAlive=pl.filter(p=>!p.isHuman&&p.alive);
     if(!aiAlive.length){setThinking(false);procRef.current=false;return;}
 
-    // 発言者選定
+    // 発言者選定：常に最大2人まで（1ターン1リクエストを守る）
     let speakerList=[];
     if(trigger&&fromHuman){
-      const named=aiAlive.filter(ai=>trigger.text.includes(ai.name));
-      const hasQ=/[？?]|役職|占い師|霊媒師|騎士|みんな|全員|誰か/.test(trigger.text);
+      // 名前を呼ばれたAI1人 + ランダム1人
+      const named=aiAlive.filter(ai=>trigger.text.includes(ai.name)).slice(0,1);
       const rest=[...aiAlive.filter(ai=>!named.some(n=>n.id===ai.id))].sort(()=>Math.random()-.5);
-      speakerList=[...named,...rest.slice(0,hasQ?2:1)];
-      if(!speakerList.length)speakerList=rest.slice(0,2);
+      speakerList=[...named,...rest.slice(0,1)];
+      if(!speakerList.length)speakerList=rest.slice(0,1);
     } else if(trigger){
-      const named=aiAlive.filter(ai=>trigger.text.includes(ai.name)&&ai.name!==trigger.sender);
+      const named=aiAlive.filter(ai=>trigger.text.includes(ai.name)&&ai.name!==trigger.sender).slice(0,1);
       const rest=[...aiAlive.filter(ai=>ai.name!==trigger.sender&&!named.some(n=>n.id===ai.id))].sort(()=>Math.random()-.5);
-      speakerList=[...named.slice(0,1),...rest.slice(0,1)];
+      speakerList=[...named,...rest.slice(0,1)];
     } else {
-      speakerList=[...aiAlive].sort(()=>Math.random()-.5).slice(0,1+Math.floor(Math.random()*2));
+      // 自動発言：1人だけ
+      speakerList=[...aiAlive].sort(()=>Math.random()-.5).slice(0,1);
     }
 
     // 占い師が結果を持っている場合は個別処理
