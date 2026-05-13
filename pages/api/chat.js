@@ -1,4 +1,8 @@
 export default async function handler(req, res) {
+  // キャッシュ完全無効化
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+  res.setHeader("Pragma", "no-cache");
+
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
   const { prompt } = req.body;
   if (!prompt) return res.status(400).json({ error: "prompt required" });
