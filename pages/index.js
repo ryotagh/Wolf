@@ -89,27 +89,17 @@ async function geminiMulti(speakers, allPlayers, chatLog, day, trigger) {
     /ありがとう|よろしく|こんにち|はじめ/.test(trigger.text) ? "挨拶" : "発言"
   ) : "自発";
 
-  const prompt = `あなたは人狼ゲームの登場人物の発言を生成するAIです。
+  const ruleByType = triggerType === "質問" ? "質問に直接答える" :
+    triggerType === "疑い" ? "疑われたら弁明、疑ったなら根拠を言う" :
+    triggerType === "挨拶" ? "挨拶に自然に返す（疑い扱い禁止）" :
+    triggerType === "役職確認" ? "役職を状況判断して答える" : "会話の流れに続ける";
 
-【ゲーム状況】${day}日目の昼。生存：${alive}。死亡：${dead}。CO情報：${coInfo}
-${triggerLine ? triggerLine + "\n【この発言の種類】" + triggerType : ""}
-
-【直近の会話（文脈として参照）】
-${log}
-
-【今回発言する登場人物と設定】
-${speakerLines}
-
-【発言生成ルール】
-・${triggerType === "質問" ? "質問には必ず直接答えること" : triggerType === "疑い" ? "疑われた人は弁明し、疑った人は根拠を述べること" : triggerType === "挨拶" ? "挨拶には自然に応じること（疑いとして扱わないこと）" : triggerType === "役職確認" ? "役職について状況判断して答えること" : "会話の流れに自然に続けること"}
-・発言は30〜80文字の自然な日本語（短すぎ・長すぎ禁止）
-・「確定的なことは言えませんが」「慎重に判断しています」などのテンプレ表現禁止
-・誰かを疑う場合は「○○さんの△△という発言が矛盾している」など具体的根拠を述べる
-・人狼は論理的に嘘をつき、過去の発言を引用して根拠を作る
-・占い師はCOするか潜伏するか状況判断する（バレる場合はCO推奨）
-・各キャラの口調・性格を維持する
-
-【出力形式】以下の形式のみ。他の文字不要。
+  const prompt = `人狼ゲーム${day}日目。生存:${alive}${dead!=="なし"?" 死亡:"+dead:""}${coInfo!=="なし"?" CO:"+coInfo:""}
+${triggerLine||""}
+会話:${log}
+登場人物:${speakerLines}
+ルール:${ruleByType}。30〜80文字。テンプレ表現禁止。疑うなら具体的根拠必須。人狼は論理的に嘘。
+出力形式のみ:
 ${speakerNames.map(n => `${n}：（セリフ）`).join("\n")}`;
 
   const raw = await callLLM(prompt);
