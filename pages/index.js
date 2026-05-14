@@ -98,7 +98,7 @@ async function geminiMulti(speakers, allPlayers, chatLog, day, trigger) {
 ${triggerLine||""}
 会話:${log}
 登場人物:${speakerLines}
-ルール:${ruleByType}。30〜80文字。テンプレ表現禁止。疑うなら具体的根拠必須。人狼は論理的に嘘。
+ルール:${ruleByType}。30〜120文字。テンプレ表現禁止。疑うなら具体的根拠必須。人狼は論理的に嘘。
 出力形式のみ:
 ${speakerNames.map(n => `${n}：（セリフ）`).join("\n")}`;
 
@@ -583,7 +583,7 @@ export default function App() {
       autoRef.current=setTimeout(()=>{
         if(phRef.current===PHASES.DAY&&!procRef.current) runAITurn(plRef.current,chRef.current,null,false);
         sched();
-      },25000+Math.random()*15000);
+      },15000+Math.random()*10000);
     };
     sched();
     return()=>{if(autoRef.current)clearTimeout(autoRef.current);};
