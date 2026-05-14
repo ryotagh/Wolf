@@ -81,31 +81,36 @@ async function geminiMulti(speakers, allPlayers, chatLog, day, trigger) {
 
   const speakerNames = speakers.map(sp => sp.name);
 
-  const prompt = `あなたは人狼ゲームの台本作家です。以下の状況で、登場人物たちのリアルな掛け合いを書いてください。
+  // 発言の文脈を分析
+  const triggerType = trigger ? (
+    /[？?]/.test(trigger.text) ? "質問" :
+    /疑|怪し|人狼|処刑|投票/.test(trigger.text) ? "疑い" :
+    /占い師|霊媒師|騎士|役職/.test(trigger.text) ? "役職確認" :
+    /ありがとう|よろしく|こんにち|はじめ/.test(trigger.text) ? "挨拶" : "発言"
+  ) : "自発";
 
-【ゲーム状況】
-${day}日目の昼。生存：${alive}。死亡：${dead}。
-役職CO状況：${coInfo}
-${triggerLine}
+  const prompt = `あなたは人狼ゲームの登場人物の発言を生成するAIです。
 
-【直近の会話】
+【ゲーム状況】${day}日目の昼。生存：${alive}。死亡：${dead}。CO情報：${coInfo}
+${triggerLine ? triggerLine + "\n【この発言の種類】" + triggerType : ""}
+
+【直近の会話（文脈として参照）】
 ${log}
 
-【今回発言する登場人物】
+【今回発言する登場人物と設定】
 ${speakerLines}
 
-【台本を書く上での絶対ルール】
-1. 直前の会話・質問に必ず反応すること（無視禁止）
-2. 2人目は1人目の発言を受けて返すこと（掛け合いにすること）
-3. 各発言は必ず20文字以上。1文字・1単語の発言は絶対禁止
-4. 抽象的な「様子がおかしい」だけは禁止。具体的な名前と根拠を必ず出す
-5. 「発言した」「喋った」だけを理由に疑うのは禁止。論理的根拠が必要
-6. 役割に忠実に（人狼は村人のふりをしながら特定の人を疑う、占い師は情報を活用）
-7. 各発言は1〜2文の自然な日本語のみ
-8. 思考プロセスがあれば（思考：〜）として先に書く（表示時にカットします）
+【発言生成ルール】
+・${triggerType === "質問" ? "質問には必ず直接答えること" : triggerType === "疑い" ? "疑われた人は弁明し、疑った人は根拠を述べること" : triggerType === "挨拶" ? "挨拶には自然に応じること（疑いとして扱わないこと）" : triggerType === "役職確認" ? "役職について状況判断して答えること" : "会話の流れに自然に続けること"}
+・発言は30〜80文字の自然な日本語（短すぎ・長すぎ禁止）
+・「確定的なことは言えませんが」「慎重に判断しています」などのテンプレ表現禁止
+・誰かを疑う場合は「○○さんの△△という発言が矛盾している」など具体的根拠を述べる
+・人狼は論理的に嘘をつき、過去の発言を引用して根拠を作る
+・占い師はCOするか潜伏するか状況判断する（バレる場合はCO推奨）
+・各キャラの口調・性格を維持する
 
-【出力形式】この形式のみ。余計な文字不要。
-${speakerNames.map(n => `${n}：（発言）`).join("\n")}`;
+【出力形式】以下の形式のみ。他の文字不要。
+${speakerNames.map(n => `${n}：（セリフ）`).join("\n")}`;
 
   const raw = await callLLM(prompt);
   if (!raw) return [];
@@ -330,14 +335,12 @@ function decideVote(ai, allPlayers, chatLog) {
   if(!cands.length)return null;
   const isWolf=["WEREWOLF","MADMAN"].includes(ai.role);
   if(isWolf){
-    // 人狼：仲間以外で人間プレイヤーを避ける傾向（バレやすいので）
     const wolfNames=[...(ai.memory?.wolfAllies||[]),ai.name];
     const targets=cands.filter(p=>!wolfNames.includes(p.name));
     const nonHuman=targets.filter(p=>!p.isHuman);
-    const pool=nonHuman.length&&Math.random()>0.1?nonHuman:targets; // 人間を狙う確率10%以下
+    const pool=nonHuman.length&&Math.random()>0.1?nonHuman:targets;
     return(pool.length?pool:cands)[Math.floor(Math.random()*(pool.length||cands.length))].id;
   }
-  // 村人陣営：占い結果優先→会話での疑い頻度→自分の疑い度
   const knownWolf=cands.find(p=>(ai.memory?.seerResults||[]).some(r=>r.name===p.name&&r.result==="人狼"));
   if(knownWolf)return knownWolf.id;
   const suspicionCount={};
@@ -345,14 +348,16 @@ function decideVote(ai, allPlayers, chatLog) {
   if(chatLog){
     chatLog.filter(m=>m.type!=="gm").slice(-20).forEach(m=>{
       cands.forEach(p=>{
-        if(m.text.includes(p.name)&&/怪し|疑|人狼じゃ|処刑|投票/.test(m.text)){
+        if(m.text.includes(p.name)&&/怪し|疑|人狼じゃ|処刑|投票したい/.test(m.text)&&m.sender!==p.name){
           suspicionCount[p.name]=(suspicionCount[p.name]||0)+1;
         }
       });
     });
   }
   const sus=ai.memory?.suspects||{};
-  const scored=cands.map(p=>({id:p.id,score:(sus[p.name]||3)+(suspicionCount[p.name]||0)*2})).sort((a,b)=>b.score-a.score);
+  const scored=cands.map(p=>({id:p.id,score:(sus[p.name]||2)+(suspicionCount[p.name]||0)*3})).sort((a,b)=>b.score-a.score);
+  // スコアが低い場合はランダム投票（序盤の即処刑を防ぐ）
+  if(scored[0]&&scored[0].score<=2) return cands[Math.floor(Math.random()*cands.length)].id;
   return scored[0]?.id||cands[Math.floor(Math.random()*cands.length)].id;
 }
 
@@ -764,12 +769,21 @@ export default function App() {
     });
     setAiVotes(av);
     setTimeout(()=>addC({type:"gm",sender:"🎲 GM",text:"⏰ 議論終了！投票フェーズです。",isHuman:false}),100);
+    // 死亡している場合は自動投票
+    if(!plRef.current.find(p=>p.isHuman)?.alive){
+      const aiTop=Object.entries(av).reduce((a,b)=>
+        (Object.values(av).filter(v=>v===b[1]).length > Object.values(av).filter(v=>v===a[1]).length)?b:a
+      , Object.entries(av)[0]);
+      setTimeout(()=>submitVote(aiTop?.[1]),2000);
+    }
   }
 
-  function submitVote(){
-    if(!selTgt||!myP?.alive)return;
-    setMyVote(selTgt);
-    const{winnerId,tally}=computeExecution(aiVotes,selTgt);
+  function submitVote(forceId){
+    const target = forceId || selTgt;
+    if(!target)return;
+    if(!myP?.alive && !forceId)return; // 死亡時はforceIdで呼ばれる場合のみ通す
+    setMyVote(target);
+    const{winnerId,tally}=computeExecution(aiVotes,target);
     const ex=plRef.current.find(p=>p.id===winnerId);if(!ex)return;
     const upd=plRef.current.map(p=>p.id===winnerId?{...p,alive:false}:p);
     setPlayers(upd);plRef.current=upd;
@@ -1032,8 +1046,9 @@ export default function App() {
             )}
             {isDead?(
               <div className="card">
-                <div className="dban">💀 死亡しているため投票できません。</div>
+                <div className="dban">💀 死亡しています。結果を見届けましょう。</div>
                 <DeadRolesPanel players={players}/>
+                <div className="ri i mt2 ts">投票はAIが自動で行います。しばらくお待ちください。</div>
               </div>
             ):(
               <div className="card">
