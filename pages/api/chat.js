@@ -1,5 +1,8 @@
 import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
 
+// Vercelのタイムアウトを30秒に延長
+export const config = { maxDuration: 30 };
+
 export default async function handler(req, res) {
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
@@ -36,13 +39,11 @@ export default async function handler(req, res) {
     let text = result.response.text().trim();
     if (!text) return res.status(200).json({ text: null });
 
-    // クリーニング（途切れ防止）
     text = text.replace(/^[\s「」『』""''\n]+|[\s「」『』""''\n]+$/g, "").trim();
-    // 文章が途中で切れている場合、最後の句読点まで切り詰める
     if (text.length > 250) {
       const cut = text.slice(0, 250);
       const lastPunct = Math.max(cut.lastIndexOf("。"), cut.lastIndexOf("！"), cut.lastIndexOf("？"));
-      text = lastPunct > 100 ? cut.slice(0, lastPunct + 1) : cut + "。";
+      text = lastPunct > 80 ? cut.slice(0, lastPunct + 1) : cut + "。";
     }
 
     return res.status(200).json({ text });
