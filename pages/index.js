@@ -583,7 +583,7 @@ export default function App() {
       autoRef.current=setTimeout(()=>{
         if(phRef.current===PHASES.DAY&&!procRef.current) runAITurn(plRef.current,chRef.current,null,false);
         sched();
-      },15000+Math.random()*10000);
+      },30000+Math.random()*20000);
     };
     sched();
     return()=>{if(autoRef.current)clearTimeout(autoRef.current);};
@@ -662,7 +662,7 @@ export default function App() {
       speakerList=[...named,...rest.slice(0,1)];
     } else {
       // 自動発言：1人だけ
-      speakerList=[...aiAlive].sort(()=>Math.random()-.5).slice(0,1);
+      speakerList=[...aiAlive].sort(()=>Math.random()-.5).slice(0,1); // 自動発言は必ず1人
     }
 
     // 占い師が結果を持っている場合は個別処理
@@ -695,7 +695,7 @@ export default function App() {
     if(!speakerList.length){setThinking(false);procRef.current=false;return;}
 
     // 残りのスピーカーを1回のAPIでまとめて生成（リクエスト節約）
-    await wait(1000);
+    await wait(3000+Math.random()*3000);
     if(phRef.current!==PHASES.DAY){setThinking(false);procRef.current=false;return;}
 
     const currentSpeakers=speakerList.map(sp=>plRef.current.find(p=>p.id===sp.id)).filter(p=>p&&p.alive);
@@ -744,7 +744,7 @@ export default function App() {
     atBottomRef.current=true;
     const m=mk({type:"human",sender:myP.name,text:txt,isHuman:true});
     setChat(p=>[...p,m]);chRef.current=[...chRef.current,m];
-    setTimeout(()=>runAITurn(plRef.current,chRef.current,{sender:myP.name,text:txt},true),400);
+    setTimeout(()=>runAITurn(plRef.current,chRef.current,{sender:myP.name,text:txt},true),2500);
   }
 
   function doVotePhase(){
