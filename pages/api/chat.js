@@ -40,10 +40,10 @@ export default async function handler(req, res) {
     if (!text) return res.status(200).json({ text: null });
 
     text = text.replace(/^[\s「」『』""''\n]+|[\s「」『』""''\n]+$/g, "").trim();
-    if (text.length > 250) {
-      const cut = text.slice(0, 250);
-      const lastPunct = Math.max(cut.lastIndexOf("。"), cut.lastIndexOf("！"), cut.lastIndexOf("？"));
-      text = lastPunct > 80 ? cut.slice(0, lastPunct + 1) : cut + "。";
+    // 文章が途中で切れないよう、末尾が句読点で終わっていない場合のみ補完
+    if (text.length > 0 && !text.match(/[。！？]$/)) {
+      const lastPunct = Math.max(text.lastIndexOf("。"), text.lastIndexOf("！"), text.lastIndexOf("？"));
+      if (lastPunct > 10) text = text.slice(0, lastPunct + 1);
     }
 
     return res.status(200).json({ text });
