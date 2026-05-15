@@ -342,7 +342,10 @@ function decideVote(ai, allPlayers, chatLog) {
     const wolfNames=[...(ai.memory?.wolfAllies||[]),ai.name];
     const targets=cands.filter(p=>!wolfNames.includes(p.name));
     const nonHuman=targets.filter(p=>!p.isHuman);
-    const pool=nonHuman.length&&Math.random()>0.1?nonHuman:targets;
+    // 序盤（1〜2日目）は人間を絶対に狙わない、3日目以降も90%はAIを狙う
+    const dayNum = chatLog ? Math.max(...chatLog.filter(m=>m.type==="gm"&&m.text.includes("日目")).map(m=>parseInt(m.text)||1), 1) : 1;
+    const avoidHuman = dayNum <= 2 || Math.random() > 0.1;
+    const pool = nonHuman.length && avoidHuman ? nonHuman : targets;
     return(pool.length?pool:cands)[Math.floor(Math.random()*(pool.length||cands.length))].id;
   }
   const knownWolf=cands.find(p=>(ai.memory?.seerResults||[]).some(r=>r.name===p.name&&r.result==="人狼"));
@@ -360,8 +363,17 @@ function decideVote(ai, allPlayers, chatLog) {
   }
   const sus=ai.memory?.suspects||{};
   const scored=cands.map(p=>({id:p.id,score:(sus[p.name]||2)+(suspicionCount[p.name]||0)*3})).sort((a,b)=>b.score-a.score);
-  // スコアが低い場合はランダム投票（序盤の即処刑を防ぐ）
-  if(scored[0]&&scored[0].score<=2) return cands[Math.floor(Math.random()*cands.length)].id;
+  // スコアが低い場合はAIだけからランダム投票（人間の即処刑を防ぐ）
+  const aiCands = cands.filter(p=>!p.isHuman);
+  if(scored[0]&&scored[0].score<=2) {
+    return aiCands.length ? aiCands[Math.floor(Math.random()*aiCands.length)].id : cands[Math.floor(Math.random()*cands.length)].id;
+  }
+  // トップ候補が人間の場合、AI候補の中から選ぶ（80%の確率）
+  const topPlayer = cands.find(p=>p.id===scored[0]?.id);
+  if(topPlayer?.isHuman && aiCands.length && Math.random()>0.2) {
+    const aiScored = scored.filter(s=>!cands.find(p=>p.id===s.id)?.isHuman);
+    if(aiScored.length) return aiScored[0].id;
+  }
   return scored[0]?.id||cands[Math.floor(Math.random()*cands.length)].id;
 }
 
@@ -596,7 +608,7 @@ export default function App() {
     // 最初の自動発言は60秒後以降（ゲーム開始直後のAPI連打を防ぐ）
     let firstCall = true;
     const sched=()=>{
-      const delay = firstCall ? 60000+Math.random()*20000 : 30000+Math.random()*20000;
+      const delay = firstCall ? 45000+Math.random()*15000 : 20000+Math.random()*15000;
       firstCall = false;
       autoRef.current=setTimeout(()=>{
         if(phRef.current===PHASES.DAY&&!procRef.current) runAITurn(plRef.current,chRef.current,null,false);
@@ -1089,7 +1101,9 @@ export default function App() {
             <div className="exec-msg">
               村人たちの投票により、<strong>{execInfo.name}</strong>が処刑されました。<br/>
               <span style={{fontSize:".72rem",color:"var(--muted)",display:"block",marginTop:8}}>【投票結果】{execInfo.summary}</span>
-              <span style={{fontSize:".76rem",marginTop:12,display:"block",color:"#ffbbbb"}}>役職は秘密です。</span>
+              <span style={{fontSize:".76rem",marginTop:12,display:"block",color:"#ffbbbb"}}>
+          {myP?.role==="MEDIUM" ? `霊媒結果：${ROLES[execInfo.role]?.name}（${ROLES[execInfo.role]?.team==="werewolf"?"人狼陣営":"村人陣営"}）` : "役職は秘密です。"}
+        </span>
             </div>
             <button className="btn bp" onClick={goToNight}>夜へ進む →</button>
           </div>
