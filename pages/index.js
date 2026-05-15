@@ -608,7 +608,7 @@ export default function App() {
     // 最初の自動発言は60秒後以降（ゲーム開始直後のAPI連打を防ぐ）
     let firstCall = true;
     const sched=()=>{
-      const delay = firstCall ? 45000+Math.random()*15000 : 25000+Math.random()*15000;
+      const delay = firstCall ? 60000+Math.random()*20000 : 35000+Math.random()*20000;
       firstCall = false;
       autoRef.current=setTimeout(()=>{
         if(phRef.current===PHASES.DAY&&!procRef.current) runAITurn(plRef.current,chRef.current,null,false);
