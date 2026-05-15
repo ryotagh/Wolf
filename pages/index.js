@@ -94,20 +94,33 @@ async function geminiMulti(speakers, allPlayers, chatLog, day, trigger) {
     triggerType === "挨拶" ? "挨拶に自然に返す（疑い扱い禁止）" :
     triggerType === "役職確認" ? "役職を状況判断して答える" : "会話の流れに続ける";
 
-  const prompt = `人狼ゲーム${day}日目。生存:${alive}${dead!=="なし"?" 死亡:"+dead:""}${coInfo!=="なし"?" CO:"+coInfo:""}
-${triggerLine||""}
+  const speakerName = speakerNames[0]; // 常に1人
+  const sp = speakers[0];
+  const isWolfSp = ["WEREWOLF","MADMAN"].includes(sp?.role);
+  const prompt = `人狼ゲーム${day}日目。あなたは${speakerName}。
+役割:${speakerLines.replace(/^・[^｜]+｜/,"")}
+生存:${alive}${triggerLine ? " "+triggerLine.replace(/\n★/," ") : ""}
 会話:${log}
-登場人物:${speakerLines}
-ルール:${ruleByType}。30〜120文字。テンプレ表現禁止。疑うなら具体的根拠必須。人狼は論理的に嘘。
-出力形式のみ:
-${speakerNames.map(n => `${n}：（セリフ）`).join("\n")}`;
+指示:${ruleByType}。30〜100文字の自然な日本語1〜2文のみ。テンプレ禁止。根拠必須。
+${speakerName}の発言:`;
 
   const raw = await callLLM(prompt);
   if (!raw) return [];
 
+  // 1人の場合：そのままテキストを使う（名前:セリフ形式も対応）
+  if (speakers.length === 1) {
+    const sp = speakers[0];
+    let text = raw.trim();
+    text = text.replace(/（思考：[^）]*）/g, "").trim();
+    const nameMatch = text.match(new RegExp(sp.name + '[：:]\s*[「]?([^」\n]+)[」]?'));
+    if (nameMatch) text = nameMatch[1].trim();
+    text = text.replace(/^[「」（）\s]+|[「」（）\s]+$/g, "").trim();
+    if (text.length > 220) text = text.slice(0, 220) + "。";
+    return [{ speaker: sp, text: text || null }];
+  }
+
   return speakers.map(sp => {
-    // 「名前：セリフ」または「名前：「セリフ」」の両方に対応
-    const regex = new RegExp(`${sp.name}[：:]\s*[「]?([^」\n]+)[」]?`);
+    const regex = new RegExp(sp.name + '[：:]\s*[「]?([^」\n]+)[」]?');
     const match = raw.match(regex);
     let text = match ? match[1].trim() : null;
     if (text) {
@@ -118,6 +131,7 @@ ${speakerNames.map(n => `${n}：（セリフ）`).join("\n")}`;
     return { speaker: sp, text };
   });
 }
+
 
 
 // ─────────────────────────────────────────────────────────────
@@ -579,11 +593,15 @@ export default function App() {
 
   useEffect(()=>{
     if(phase!==PHASES.DAY){if(autoRef.current)clearTimeout(autoRef.current);return;}
+    // 最初の自動発言は60秒後以降（ゲーム開始直後のAPI連打を防ぐ）
+    let firstCall = true;
     const sched=()=>{
+      const delay = firstCall ? 60000+Math.random()*20000 : 30000+Math.random()*20000;
+      firstCall = false;
       autoRef.current=setTimeout(()=>{
         if(phRef.current===PHASES.DAY&&!procRef.current) runAITurn(plRef.current,chRef.current,null,false);
         sched();
-      },30000+Math.random()*20000);
+      },delay);
     };
     sched();
     return()=>{if(autoRef.current)clearTimeout(autoRef.current);};
@@ -650,19 +668,16 @@ export default function App() {
 
     // 発言者選定：常に最大2人まで（1ターン1リクエストを守る）
     let speakerList=[];
+    // 常に1人だけ（RPM節約・429防止）
     if(trigger&&fromHuman){
-      // 名前を呼ばれたAI1人 + ランダム1人
+      // 名指しされたAIを優先、なければランダム1人
       const named=aiAlive.filter(ai=>trigger.text.includes(ai.name)).slice(0,1);
-      const rest=[...aiAlive.filter(ai=>!named.some(n=>n.id===ai.id))].sort(()=>Math.random()-.5);
-      speakerList=[...named,...rest.slice(0,1)];
-      if(!speakerList.length)speakerList=rest.slice(0,1);
+      speakerList=named.length ? named : [...aiAlive].sort(()=>Math.random()-.5).slice(0,1);
     } else if(trigger){
       const named=aiAlive.filter(ai=>trigger.text.includes(ai.name)&&ai.name!==trigger.sender).slice(0,1);
-      const rest=[...aiAlive.filter(ai=>ai.name!==trigger.sender&&!named.some(n=>n.id===ai.id))].sort(()=>Math.random()-.5);
-      speakerList=[...named,...rest.slice(0,1)];
+      speakerList=named.length ? named : [...aiAlive.filter(ai=>ai.name!==trigger.sender)].sort(()=>Math.random()-.5).slice(0,1);
     } else {
-      // 自動発言：1人だけ
-      speakerList=[...aiAlive].sort(()=>Math.random()-.5).slice(0,1); // 自動発言は必ず1人
+      speakerList=[...aiAlive].sort(()=>Math.random()-.5).slice(0,1);
     }
 
     // 占い師が結果を持っている場合は個別処理
