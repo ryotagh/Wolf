@@ -1,10 +1,11 @@
 import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
 export const config = { maxDuration: 30 };
 
-// 2つのAPIキーをローテーション（429が出たら自動で切り替え）
+// 3つのAPIキーをローテーション（429が出たら自動で次のキーに切り替え）
 const API_KEYS = [
   process.env.GEMINI_API_KEY,
   process.env.GEMINI_API_KEY_2,
+  process.env.GEMINI_API_KEY_3,
 ].filter(Boolean);
 let keyIndex = 0;
 
@@ -13,25 +14,34 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
   const { prompt } = req.body;
   if (!prompt) return res.status(400).json({ error: "prompt required" });
+  if (!API_KEYS.length) return res.status(500).json({ error: "API key not configured" });
 
-  // 最大2回試す（キーを切り替えながら）
-  for (let attempt = 0; attempt < API_KEYS.length; attempt++) {
+  // 全キーを2周試す（1周目全滅→少し待って1個目から再試行）
+  const maxAttempts = API_KEYS.length * 2;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    // 2周目の最初だけ少し待つ（1個目が回復している可能性があるため）
+    if (attempt === API_KEYS.length) {
+      await new Promise(r => setTimeout(r, 8000));
+    }
     const apiKey = API_KEYS[keyIndex % API_KEYS.length];
-    if (!apiKey) break;
+    keyIndex = (keyIndex + 1) % API_KEYS.length;
     try {
       const genAI = new GoogleGenerativeAI(apiKey);
       const model = genAI.getGenerativeModel({
         model: "gemini-2.5-flash-lite",
-        generationConfig: { maxOutputTokens: 600, temperature: 1.0, topP: 0.95 },
+        generationConfig: {
+          maxOutputTokens: 600,
+          temperature: 1.0,
+          topP: 0.95,
+        },
         safetySettings: [
-          { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-          { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+          { category: HarmCategory.HARM_CATEGORY_HARASSMENT,        threshold: HarmBlockThreshold.BLOCK_NONE },
+          { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,       threshold: HarmBlockThreshold.BLOCK_NONE },
           { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
           { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
         ],
       });
       const result = await model.generateContent(prompt);
-      keyIndex = (keyIndex + 1) % API_KEYS.length; // 次回は次のキー
       if (!result.response.candidates || result.response.candidates[0]?.finishReason === "SAFETY") {
         return res.status(200).json({ text: null });
       }
@@ -44,10 +54,14 @@ export default async function handler(req, res) {
       }
       return res.status(200).json({ text });
     } catch (error) {
-      if (error?.status === 429 || String(error?.message).includes("429")) {
-        keyIndex = (keyIndex + 1) % API_KEYS.length; // キーを切り替えてリトライ
-        continue;
+      const is429 = error?.status === 429 || String(error?.message).includes("429");
+      if (is429 && attempt < maxAttempts - 1) {
+        continue; // 次のキーへ
       }
+      if (is429) {
+        return res.status(429).json({ error: "rate_limit" });
+      }
+      console.error("Gemini error:", error?.message || error);
       return res.status(500).json({ error: "failed" });
     }
   }
