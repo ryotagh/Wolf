@@ -151,7 +151,7 @@ async function geminiMulti(speakers, allPlayers, chatLog, day, trigger) {
 役割:${speakerLines.replace(/^・[^｜]+｜/,"")}
 生存:${alive}${triggerLine ? " "+triggerLine.replace(/\n★/," ") : ""}
 会話:${log}
-指示:${ruleByType}。30〜100文字。説明・選択肢・解説・前置き一切不要。プレイヤーとしての発言のみ。必ず{"message":"発言内容"}のJSON形式のみで返す。`;
+指示:${ruleByType}。30〜100文字の自然な日本語1〜2文のみ。説明・選択肢・解説・前置き・JSON・記号一切不要。プレイヤーの発言文だけ返す。`;
 
   // callLLM内のextractMessageで既にプロンプト漏れを除去済み
   const raw = await callLLM(prompt);
@@ -640,10 +640,10 @@ export default function App() {
     if(phase!==PHASES.DAY){if(autoRef.current)clearTimeout(autoRef.current);return;}
     let firstCall = true;
     const sched=()=>{
-      // 初回は20〜35秒後、以降は25〜40秒ごと
+      // 初回は10〜20秒後、以降は15〜25秒ごと
       const delay = firstCall
-        ? 20000 + Math.random() * 15000
-        : 25000 + Math.random() * 15000;
+        ? 10000 + Math.random() * 10000
+        : 15000 + Math.random() * 10000;
       firstCall = false;
       autoRef.current=setTimeout(()=>{
         if(phRef.current===PHASES.DAY&&!procRef.current) runAITurn(plRef.current,chRef.current,null,false);
@@ -734,7 +734,7 @@ export default function App() {
         if(unpub.length&&Math.random()>0.4){
           const r=unpub[unpub.length-1];
           const text=await gemini(
-            `人狼ゲーム${day}日目。あなたは占い師「${base.name}」。昨夜${r.name}を占い結果は「${r.result}」。今この情報をCOする。直前の会話：${ch.filter(m=>m.type!=="gm").slice(-3).map(m=>m.sender+"「"+m.text+"」").join(" ")}\nルール：プレイヤーとしての発言1〜2文のみ。説明・選択肢・解説・前置き一切不要。必ず{"message":"発言"}のJSON形式のみで返す。`
+            `人狼ゲーム${day}日目。あなたは占い師「${base.name}」。昨夜${r.name}を占い結果は「${r.result}」。今この情報をCOする。直前の会話：${ch.filter(m=>m.type!=="gm").slice(-3).map(m=>m.sender+"「"+m.text+"」").join(" ")}\nルール：プレイヤーとしての発言1〜2文のみ。説明・選択肢・解説・前置き一切不要。日本語の発言文だけ返す。JSON・記号・前置き不要。`
           )||`占い師としてCOします。昨夜${r.name}さんを占いました。結果は${r.result}でした。`;
           await wait(1500);
           if(phRef.current!==PHASES.DAY)break;
@@ -798,7 +798,7 @@ export default function App() {
     atBottomRef.current=true;
     const m=mk({type:"human",sender:myP.name,text:txt,isHuman:true});
     setChat(p=>[...p,m]);chRef.current=[...chRef.current,m];
-    setTimeout(()=>runAITurn(plRef.current,chRef.current,{sender:myP.name,text:txt},true),2500);
+    setTimeout(()=>runAITurn(plRef.current,chRef.current,{sender:myP.name,text:txt},true),1500);
   }
 
   function doVotePhase(){
@@ -934,7 +934,7 @@ export default function App() {
     setPlayers(upd);plRef.current=upd;
     const nd=dayRef.current+1;setDay(nd);dayRef.current=nd;
     const w=checkWin(upd);
-    if(w.over){setWinners(w.winners);setEndPlayers(upd);setTimeout(()=>setPhase(PHASES.GAME_OVER),1500);}
+    if(w.over){setWinners(w.winners);setEndPlayers(upd);setTimeout(()=>setPhase(PHASES.GAME_OVER),4000);}
     else{
       setTimeout(()=>{
         setPhase(PHASES.DAY);phRef.current=PHASES.DAY;
@@ -1207,6 +1207,12 @@ export default function App() {
                       {!p.alive&&<div className="tx" style={{color:"var(--red)"}}>死亡</div>}
                     </div>
                   ))}
+                </div>
+              </div>
+              <div className="card mt3" style={{textAlign:"left"}}>
+                <div className="ct ts">💬 最後の会話ログ</div>
+                <div style={{maxHeight:220,overflowY:"auto"}}>
+                  {chat.slice(-20).map(m=><Msg key={m.id} m={m}/>)}
                 </div>
               </div>
               <button className="btn bp mt3" onClick={reset}>🔄 もう一度プレイ</button>
