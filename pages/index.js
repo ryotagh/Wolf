@@ -61,9 +61,9 @@ function extractMessage(raw) {
 }
 
 async function gemini(prompt) {
-  // 前回呼び出しから5秒未満なら待つ（毎分最大12回に収まる）
+  // 前回呼び出しから8秒未満なら待つ（5キーローテーションで429を防ぐ）
   const now = Date.now();
-  const waitMs = Math.max(0, lastGeminiCall + 5000 - now);
+  const waitMs = Math.max(0, lastGeminiCall + 8000 - now);
   if (waitMs > 0) await new Promise(r => setTimeout(r, waitMs));
   lastGeminiCall = Date.now();
 
@@ -81,9 +81,9 @@ async function gemini(prompt) {
 
   try {
     let raw = await doFetch();
-    // 429なら45秒待って1回だけリトライ
+    // 429なら20秒待って1回だけリトライ（chat.js側でキーローテーション済み）
     if (raw === "RATE_LIMIT") {
-      await new Promise(r => setTimeout(r, 45000));
+      await new Promise(r => setTimeout(r, 20000));
       lastGeminiCall = Date.now();
       raw = await doFetch();
       if (raw === "RATE_LIMIT") return null;
@@ -121,7 +121,7 @@ async function geminiMulti(speakers, allPlayers, chatLog, day, trigger) {
     // 人狼・狂人が偽占い師COする確率（20%）
     const fakeSeerCO = isWolf && !sp.memory?.claimedRole && Math.random() < 0.2;
     const roleDesc = fakeSeerCO
-      ? `人狼だが占い師を騙る。偽の占い結果を発表してCOする（例：「占い師COします。${sp.memory?.wolfAllies?.[0]||"村人A"}さんを占ったら村人でした」）`
+      ? `人狼だが占い師を騙る。偽の占い結果をでっち上げてCOする。対象は生存者の中から選ぶ。人狼仲間以外の名前を使う。嘘の結果（村人でも人狼と言うか、人狼でも村人と言う）を発表する。`
       : isWolf
       ? `人狼（村人のふりをする。嘘をつく。仲間を守る${wolfInfo}）`
       : sp.role === "SEER" ? `占い師（${seerResult || "まだ結果なし"}。適切なタイミングでCO）`
@@ -751,7 +751,7 @@ export default function App() {
           if(phRef.current!==PHASES.DAY)break;
           const updPl=plRef.current.map(p=>p.id===base.id?{...p,memory:{...p.memory,claimedRole:"SEER",said:[...(p.memory.said||[]),text]}}:p);
           setPlayers(updPl);plRef.current=updPl;
-          const m=mk({type:"ai",sender:base.name,text:extractMessage(text)||text,isHuman:false,isSeer:true});
+          const m=mk({type:"ai",sender:base.name,text:extractMessage(text)||text,isHuman:false,isSeer:false});
           setChat(prev=>[...prev,m]);ch=[...ch,m];chRef.current=ch;
           speakerList=speakerList.filter(s=>s.id!==sp.id);
           seerHandled=true;
