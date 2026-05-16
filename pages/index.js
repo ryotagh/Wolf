@@ -687,10 +687,10 @@ export default function App() {
     ];
     const ais=[...pl.filter(p=>!p.isHuman&&p.alive)].sort(()=>Math.random()-.5).slice(0,3);
     for(let i=0;i<ais.length;i++){
-      await wait(600+Math.random()*800);
+      await wait(2000+Math.random()*2000);
       const ai=ais[i];
       const text=greetings[Math.floor(Math.random()*greetings.length)](ai.name);
-      const m=mk({type:"ai",sender:ai.name,text,isHuman:false});
+      const m=mk({type:"ai",sender:ai.name,text:extractMessage(text)||text,isHuman:false});
       const updPl=plRef.current.map(p=>p.id===ai.id?{...p,memory:{...p.memory,said:[...(p.memory.said||[]),text]}}:p);
       setPlayers(updPl);plRef.current=updPl;
       setChat(p=>[...p,m]);ch=[...ch,m];chRef.current=ch;
@@ -732,7 +732,7 @@ export default function App() {
           if(phRef.current!==PHASES.DAY)break;
           const updPl=plRef.current.map(p=>p.id===base.id?{...p,memory:{...p.memory,claimedRole:"SEER",said:[...(p.memory.said||[]),text]}}:p);
           setPlayers(updPl);plRef.current=updPl;
-          const m=mk({type:"ai",sender:base.name,text,isHuman:false,isSeer:true});
+          const m=mk({type:"ai",sender:base.name,text:extractMessage(text)||text,isHuman:false,isSeer:true});
           setChat(prev=>[...prev,m]);ch=[...ch,m];chRef.current=ch;
           speakerList=speakerList.filter(s=>s.id!==sp.id);
           seerHandled=true;
@@ -777,7 +777,7 @@ export default function App() {
       const updPl=plRef.current.map(p=>p.id===base.id?{...p,memory:mem}:p);
       setPlayers(updPl);plRef.current=updPl;
 
-      const m=mk({type:"ai",sender:base.name,text,isHuman:false,isSeer:false});
+      const m=mk({type:"ai",sender:base.name,text:extractMessage(text)||text,isHuman:false,isSeer:false});
       setChat(prev=>[...prev,m]);ch=[...ch,m];chRef.current=ch;
       if(i<finalResults.length-1) await wait(2500+Math.random()*2000);
     }
