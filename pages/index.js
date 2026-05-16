@@ -147,19 +147,32 @@ async function geminiMulti(speakers, allPlayers, chatLog, day, trigger) {
   const speakerName = speakerNames[0];
   const sp = speakers[0];
 
-  const prompt = `人狼ゲーム${day}日目。あなたは${speakerName}。
+  const prompt = `人狼ゲーム${day}日目。あなたは${speakerName}として発言する。
 役割:${speakerLines.replace(/^・[^｜]+｜/,"")}
-生存:${alive}${triggerLine ? " "+triggerLine.replace(/\n★/," ") : ""}
-会話:${log}
-指示:${ruleByType}。30〜100文字の自然な日本語1〜2文のみ。説明・選択肢・解説・前置き・JSON・記号一切不要。プレイヤーの発言文だけ返す。`;
+生存者:${alive}
+直近の会話:${log}${triggerLine ? "\n直前の発言に必ず反応:"+trigger.sender+"「"+trigger.text+"」" : ""}
+ルール:
+- ${speakerName}本人の発言のみ返す
+- 他のプレイヤーの名前:セリフ形式で返さない
+- 挨拶フェーズが終わったら人狼を探す議論をする
+- 疑い・根拠・推理を積極的に話す
+- 30〜80文字の自然な日本語1文のみ
+- 記号・JSON・前置き・説明一切不要`;
 
-  // callLLM内のextractMessageで既にプロンプト漏れを除去済み
   const raw = await callLLM(prompt);
   if (!raw) return [];
 
   if (speakers.length === 1) {
     const sp = speakers[0];
     let text = raw.trim();
+    // 「名前：「セリフ」」や「名前:セリフ」形式が返ってきた場合、セリフ部分だけ抜く
+    const nameColonMatch = text.match(/^[^
+：:「]{1,10}[：:「]「?(.+?)」?$/s);
+    if (nameColonMatch) text = nameColonMatch[1].trim();
+    // 自分の名前が先頭についてたら除去
+    const selfNameMatch = text.match(new RegExp("^" + sp.name + "[：:「\\s]+(.*)", "s"));
+    if (selfNameMatch) text = selfNameMatch[1].trim();
+    text = text.replace(/^[「」\s]+|[「」\s]+$/g, "").trim();
     if (text.length > 220) text = text.slice(0, 220) + "。";
     return [{ speaker: sp, text: text || null }];
   }
