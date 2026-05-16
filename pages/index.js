@@ -165,13 +165,11 @@ async function geminiMulti(speakers, allPlayers, chatLog, day, trigger) {
   if (speakers.length === 1) {
     const sp = speakers[0];
     let text = raw.trim();
-    // 「名前：「セリフ」」や「名前:セリフ」形式が返ってきた場合、セリフ部分だけ抜く
-    const nameColonMatch = text.match(/^[^
-：:「]{1,10}[：:「]「?(.+?)」?$/s);
-    if (nameColonMatch) text = nameColonMatch[1].trim();
+    // 「名前：セリフ」形式が返ってきた場合、セリフ部分だけ抜く
+    text = text.replace(/^[゠-ヿ぀-ゟ一-鿿＀-￯\w]{1,10}[：:Ｘ「][「]?/g, "");
     // 自分の名前が先頭についてたら除去
-    const selfNameMatch = text.match(new RegExp("^" + sp.name + "[：:「\\s]+(.*)", "s"));
-    if (selfNameMatch) text = selfNameMatch[1].trim();
+    const selfName = new RegExp("^" + sp.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "[\u0020\uff1a:\u300c]+");
+    text = text.replace(selfName, "").trim();
     text = text.replace(/^[「」\s]+|[「」\s]+$/g, "").trim();
     if (text.length > 220) text = text.slice(0, 220) + "。";
     return [{ speaker: sp, text: text || null }];
