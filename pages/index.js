@@ -510,13 +510,22 @@ function NI({ v, onChange, min=0, max=5 }) {
   );
 }
 
+function safeText(text) {
+  if (!text) return text;
+  const t = text.trim();
+  if (t.startsWith("{") && t.includes('"message"')) {
+    try { const j = JSON.parse(t); if (j.message) return j.message.trim(); } catch {}
+  }
+  return text;
+}
+
 function Msg({ m }) {
   const nc=m.type==="gm"?"mn-gm":m.isSeer?"mn-sr":m.isHuman?"mn-hu":"mn-ai";
   const cls=m.type==="gm"?"msg msg-gm":m.isSeer?"msg msg-sr":"msg";
   return (
     <div className={cls}>
       {m.sender&&<div className="mh"><span className={`mn ${nc}`}>{m.sender}</span><span className="mt">{m.time}</span></div>}
-      <div className="mb">{m.text}</div>
+      <div className="mb">{safeText(m.text)}</div>
     </div>
   );
 }
@@ -1146,7 +1155,12 @@ export default function App() {
                           </div>
                         ))}
                       </div>
-                      <button className="btn bp mt3" disabled={!selTgt} onClick={submitNight}>決定</button>
+                      <div className="fl g2 mt3">
+                        <button className="btn bp" disabled={!selTgt} onClick={submitNight}>決定</button>
+                        {myP.role==="ILLUSIONIST"&&(
+                          <button className="btn bg" onClick={()=>resolveNight(nightAct,plRef.current)}>後回し</button>
+                        )}
+                      </div>
                     </>
                   )}
                   {myP.role==="ILLUSIONIST"&&myP.memory?.illusionistUsed&&(
