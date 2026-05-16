@@ -22,26 +22,69 @@ const rnd = a => a[Math.floor(Math.random() * a.length)];
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
 // ─────────────────────────────────────────────────────────────
-// GEMINI - クライアント側レート制限（4秒に1回まで）
+// GEMINI - レート制限・リトライ・JSON抽出
 // ─────────────────────────────────────────────────────────────
 let lastGeminiCall = 0;
 
-async function gemini(prompt) {
+// JSON形式の返答から message フィールドだけ抽出する
+// 失敗した場合はテキストをそのまま使うが、プロンプト漏れっぽい文は除去する
+function extractMessage(raw) {
+  if (!raw) return null;
+  // JSON試行
   try {
-    // 前回呼び出しから4秒未満なら待つ（毎分最大15回に収まる）
-    const now = Date.now();
-    const waitMs = Math.max(0, lastGeminiCall + 4000 - now);
-    if (waitMs > 0) await new Promise(r => setTimeout(r, waitMs));
-    lastGeminiCall = Date.now();
+    const j = JSON.parse(raw.trim());
+    if (j.message) return j.message.trim();
+  } catch {}
+  // JSON失敗 → テキストから余計な部分を除去
+  let text = raw.trim();
+  // 「選択肢」「解説」「承知」「生成します」などプロンプト漏れを除去
+  const badPatterns = [
+    /^(はい、?)?承知(いたしました|しました)[。．]?.*/,
+    /選択肢[1-9１-９][:：].*/g,
+    /\*\*[^*]+\*\*/g,
+    /---+.*/g,
+    /解説[:：].*/g,
+    /を.*生成します[。．]?.*/,
+    /^\s*[「『]?\s*(指示|プロンプト|ゲームマスター|GM)[:：].*/gm,
+  ];
+  for (const p of badPatterns) text = text.replace(p, "");
+  // 最初の1〜2文だけ取る
+  const sentences = text.match(/[^。！？\n]+[。！？]/g);
+  if (sentences && sentences.length > 0) return sentences.slice(0, 2).join("").trim();
+  // それでも残ったテキストを返す（空なら null）
+  text = text.trim();
+  return text.length > 5 ? text : null;
+}
 
+async function gemini(prompt) {
+  // 前回呼び出しから5秒未満なら待つ（毎分最大12回に収まる）
+  const now = Date.now();
+  const waitMs = Math.max(0, lastGeminiCall + 5000 - now);
+  if (waitMs > 0) await new Promise(r => setTimeout(r, waitMs));
+  lastGeminiCall = Date.now();
+
+  const doFetch = async () => {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prompt }),
     });
+    if (res.status === 429) return "RATE_LIMIT";
     if (!res.ok) return null;
     const data = await res.json();
     return data.text || null;
+  };
+
+  try {
+    let raw = await doFetch();
+    // 429なら45秒待って1回だけリトライ
+    if (raw === "RATE_LIMIT") {
+      await new Promise(r => setTimeout(r, 45000));
+      lastGeminiCall = Date.now();
+      raw = await doFetch();
+      if (raw === "RATE_LIMIT") return null;
+    }
+    return extractMessage(raw);
   } catch { return null; }
 }
 
@@ -100,33 +143,21 @@ async function geminiMulti(speakers, allPlayers, chatLog, day, trigger) {
 役割:${speakerLines.replace(/^・[^｜]+｜/,"")}
 生存:${alive}${triggerLine ? " "+triggerLine.replace(/\n★/," ") : ""}
 会話:${log}
-指示:${ruleByType}。30〜100文字の自然な日本語1〜2文のみ。テンプレ禁止。根拠必須。
-${speakerName}の発言:`;
+指示:${ruleByType}。30〜100文字。説明・選択肢・解説・前置き一切不要。プレイヤーとしての発言のみ。必ず{"message":"発言内容"}のJSON形式のみで返す。`;
 
+  // callLLM内のextractMessageで既にプロンプト漏れを除去済み
   const raw = await callLLM(prompt);
   if (!raw) return [];
 
   if (speakers.length === 1) {
     const sp = speakers[0];
     let text = raw.trim();
-    text = text.replace(/（思考：[^）]*）/g, "").trim();
-    const nameMatch = text.match(new RegExp(sp.name + '[：:]\s*[「]?([^」\n]+)[」]?'));
-    if (nameMatch) text = nameMatch[1].trim();
-    text = text.replace(/^[「」（）\s]+|[「」（）\s]+$/g, "").trim();
     if (text.length > 220) text = text.slice(0, 220) + "。";
     return [{ speaker: sp, text: text || null }];
   }
 
   return speakers.map(sp => {
-    const regex = new RegExp(sp.name + '[：:]\s*[「]?([^」\n]+)[」]?');
-    const match = raw.match(regex);
-    let text = match ? match[1].trim() : null;
-    if (text) {
-      text = text.replace(/（思考：[^）]*）/g, "").trim();
-      text = text.replace(/^[「」（）\s]+|[「」（）\s]+$/g, "").trim();
-      if (text.length > 220) text = text.slice(0, 220) + "。";
-    }
-    return { speaker: sp, text };
+    return { speaker: sp, text: raw || null };
   });
 }
 
@@ -686,7 +717,7 @@ export default function App() {
         if(unpub.length&&Math.random()>0.4){
           const r=unpub[unpub.length-1];
           const text=await gemini(
-            `占い師として「${r.name}を昨夜占いました。結果は${r.result}でした」という情報を、今のゲーム状況（${day}日目）で自然にCOする発言を1〜2文で生成してください。直前の会話：${ch.filter(m=>m.type!=="gm").slice(-3).map(m=>m.sender+"「"+m.text+"」").join(" ")}`
+            `人狼ゲーム${day}日目。あなたは占い師「${base.name}」。昨夜${r.name}を占い結果は「${r.result}」。今この情報をCOする。直前の会話：${ch.filter(m=>m.type!=="gm").slice(-3).map(m=>m.sender+"「"+m.text+"」").join(" ")}\nルール：プレイヤーとしての発言1〜2文のみ。説明・選択肢・解説・前置き一切不要。必ず{"message":"発言"}のJSON形式のみで返す。`
           )||`占い師としてCOします。昨夜${r.name}さんを占いました。結果は${r.result}でした。`;
           await wait(1500);
           if(phRef.current!==PHASES.DAY)break;
