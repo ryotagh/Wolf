@@ -30,14 +30,19 @@ let lastGeminiCall = 0;
 // 失敗した場合はテキストをそのまま使うが、プロンプト漏れっぽい文は除去する
 function extractMessage(raw) {
   if (!raw) return null;
-  // JSON試行
+  let text = raw.trim();
+  // JSON形式 {"message":"..."} を試みる
   try {
-    const j = JSON.parse(raw.trim());
+    const j = JSON.parse(text);
     if (j.message) return j.message.trim();
   } catch {}
-  // JSON失敗 → テキストから余計な部分を除去
-  let text = raw.trim();
-  // 「選択肢」「解説」「承知」「生成します」などプロンプト漏れを除去
+  // JSON部分だけ抜き出して試みる（前後にゴミがある場合）
+  const jsonMatch = text.match(/\{[^{}]*"message"\s*:\s*"([^"]+)"[^{}]*\}/);
+  if (jsonMatch) return jsonMatch[1].trim();
+  // "message": "..." 形式（JSONパース失敗時）
+  const msgMatch = text.match(/"message"\s*:\s*"([^"]+)"/);
+  if (msgMatch) return msgMatch[1].trim();
+  // プロンプト漏れ除去
   const badPatterns = [
     /^(はい、?)?承知(いたしました|しました)[。．]?.*/,
     /選択肢[1-9１-９][:：].*/g,
@@ -46,13 +51,12 @@ function extractMessage(raw) {
     /解説[:：].*/g,
     /を.*生成します[。．]?.*/,
     /^\s*[「『]?\s*(指示|プロンプト|ゲームマスター|GM)[:：].*/gm,
+    /\{.*\}/gs,  // JSON文字列全体を除去
   ];
   for (const p of badPatterns) text = text.replace(p, "");
-  // 最初の1〜2文だけ取る
+  text = text.trim();
   const sentences = text.match(/[^。！？\n]+[。！？]/g);
   if (sentences && sentences.length > 0) return sentences.slice(0, 2).join("").trim();
-  // それでも残ったテキストを返す（空なら null）
-  text = text.trim();
   return text.length > 5 ? text : null;
 }
 
@@ -114,10 +118,14 @@ async function geminiMulti(speakers, allPlayers, chatLog, day, trigger) {
       ? `占い済み：${sp.memory.seerResults.map(r=>`${r.name}→${r.result}`).join("、")}` : "";
     const suspects = Object.entries(sp.memory?.suspects||{})
       .filter(([,v])=>v>=4).map(([n])=>n).join("、") || "特になし";
-    const roleDesc = isWolf
+    // 人狼・狂人が偽占い師COする確率（20%）
+    const fakeSeerCO = isWolf && !sp.memory?.claimedRole && Math.random() < 0.2;
+    const roleDesc = fakeSeerCO
+      ? `人狼だが占い師を騙る。偽の占い結果を発表してCOする（例：「占い師COします。${sp.memory?.wolfAllies?.[0]||"村人A"}さんを占ったら村人でした」）`
+      : isWolf
       ? `人狼（村人のふりをする。嘘をつく。仲間を守る${wolfInfo}）`
       : sp.role === "SEER" ? `占い師（${seerResult || "まだ結果なし"}。適切なタイミングでCO）`
-      : sp.role === "MADMAN" ? `狂人（村人陣営を混乱させる）`
+      : sp.role === "MADMAN" ? `狂人（村人陣営を混乱させる。状況次第で偽占い師COも可）`
       : `${ROLES[sp.role]?.name}（人狼を探す）`;
     return `・${sp.name}｜役割：${roleDesc}｜性格：${sp.personality}｜疑っている人：${suspects}`;
   }).join("\n");
@@ -632,10 +640,10 @@ export default function App() {
     if(phase!==PHASES.DAY){if(autoRef.current)clearTimeout(autoRef.current);return;}
     let firstCall = true;
     const sched=()=>{
-      // 初回は60〜90秒後、以降は60〜90秒ごと（RPM制限対策）
+      // 初回は20〜35秒後、以降は25〜40秒ごと
       const delay = firstCall
-        ? 60000 + Math.random() * 30000
-        : 60000 + Math.random() * 30000;
+        ? 20000 + Math.random() * 15000
+        : 25000 + Math.random() * 15000;
       firstCall = false;
       autoRef.current=setTimeout(()=>{
         if(phRef.current===PHASES.DAY&&!procRef.current) runAITurn(plRef.current,chRef.current,null,false);
@@ -743,7 +751,7 @@ export default function App() {
 
     if(!speakerList.length){setThinking(false);procRef.current=false;return;}
 
-    await wait(3000+Math.random()*3000);
+    await wait(1000+Math.random()*1500);
     if(phRef.current!==PHASES.DAY){setThinking(false);procRef.current=false;return;}
 
     const currentSpeakers=speakerList.map(sp=>plRef.current.find(p=>p.id===sp.id)).filter(p=>p&&p.alive);
