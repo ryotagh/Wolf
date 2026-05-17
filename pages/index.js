@@ -828,8 +828,21 @@ export default function App() {
       const aiTop=Object.entries(av).reduce((a,b)=>
         (Object.values(av).filter(v=>v===b[1]).length > Object.values(av).filter(v=>v===a[1]).length)?b:a
       , Object.entries(av)[0]);
-      setTimeout(()=>submitVote(aiTop?.[1]),2000);
+      // avをそのまま渡して古いstateを参照しないようにする
+      setTimeout(()=>submitVoteWithAv(aiTop?.[1], av),2000);
     }
+  }
+
+  function submitVoteWithAv(forceId, av){
+    if(!forceId)return;
+    const{winnerId,tally}=computeExecution(av, forceId);
+    const ex=plRef.current.find(p=>p.id===winnerId);if(!ex)return;
+    const upd=plRef.current.map(p=>p.id===winnerId?{...p,alive:false}:p);
+    setPlayers(upd);plRef.current=upd;
+    const summary=Object.entries(tally).sort((a,b)=>b[1]-a[1])
+      .map(([id,cnt])=>{const p=plRef.current.find(q=>q.id===id);return`${p?.name||"?"}:${cnt}票`;}).join("、");
+    setExecInfo({name:ex.name,role:ex.role,summary});
+    setPhase(PHASES.EXECUTION);phRef.current=PHASES.EXECUTION;
   }
 
   function submitVote(forceId){
