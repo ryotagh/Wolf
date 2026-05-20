@@ -61,7 +61,7 @@ function extractMessage(raw) {
 }
 
 async function gemini(prompt) {
-  // 前回呼び出しから8秒未満なら待つ（5キーローテーションで429を防ぐ）
+  // 前回呼び出しから12秒未満なら待つ（毎分最大5回に抑える）
   const now = Date.now();
   const waitMs = Math.max(0, lastGeminiCall + 8000 - now);
   if (waitMs > 0) await new Promise(r => setTimeout(r, waitMs));
@@ -162,6 +162,9 @@ async function geminiMulti(speakers, allPlayers, chatLog, day, trigger) {
 役割:${speakerLines.replace(/^・[^｜]+｜/,"")}
 生存者:${alive}
 直近の会話（最新20件）:${log}${triggerLine ? "\n直前の発言に必ず反応:"+trigger.sender+"「"+trigger.text+"」" : ""}
+
+【用語定義】確定黒=複数視点で人狼確定→優先吊り候補。確定白=人狼でない確定→基本疑わない。CO=役職宣言。対抗=同役職名乗り。グレー=白黒不明。
+確定黒は必ず吊り候補にする。確定白は疑わない。CO状況・占い結果・投票履歴を記憶して発言に活かす。矛盾する発言をした人物を具体的に指摘する。
 
 【用語定義】
 - 確定黒：複数視点から人狼確定。優先的に吊る
