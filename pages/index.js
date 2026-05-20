@@ -100,7 +100,7 @@ async function geminiMulti(speakers, allPlayers, chatLog, day, trigger) {
 
   const alive = allPlayers.filter(p => p.alive).map(p => p.name).join("、");
 
-  const log = chatLog.filter(m => m.type !== "gm")
+  const log = chatLog.filter(m => m.type !== "gm").slice(-20).slice(-20)
     .map(m => `${m.sender}：「${m.text}」`).join("\n") || "（まだなし）";
 
   const triggerLine = trigger ? `\n★直前の発言（必ず反応すること）：${trigger.sender}「${trigger.text}」` : "";
@@ -129,7 +129,7 @@ async function geminiMulti(speakers, allPlayers, chatLog, day, trigger) {
       : sp.role === "KNIGHT"
       ? `騎士（狩人）。【戦略】絶対に潜伏する。COは吊られそうな時だけ。「私は騎士です」と軽率に言ってはいけない。村人のように自然に振る舞い、護衛対象を読む発言をする。`
       : sp.role === "MEDIUM"
-      ? `霊媒師。【戦略】吊り結果を報告して村を導く。落ち着いて情報を整理する。ロラ覚悟で情報を出す場面もある。感情的にならず冷静に進行を補助する。`
+      ? `霊媒師。【戦略】処刑された人物の白黒を翌日以降に報告する。初日は占い結果がないので普通に議論する。吊り結果が出てから報告する。冷静に進行を補助する。ロラ覚悟で情報を出す場面もある。`
       : sp.role === "MADMAN"
       ? `狂人（人狼が誰かわからない）。【戦略】村を混乱させて人狼を勝たせる。占い師や霊媒師を騙ることもある。黒特攻・偽結果も使う。ただしわざとらしくなりすぎない。常時テンション高くしない。`
       : sp.role === "BAKER"
@@ -161,23 +161,38 @@ async function geminiMulti(speakers, allPlayers, chatLog, day, trigger) {
   const prompt = `人狼ゲーム${day}日目。あなたは${speakerName}として発言する。
 役割:${speakerLines.replace(/^・[^｜]+｜/,"")}
 生存者:${alive}
-これまでの会話（全履歴）:${log}${triggerLine ? "\n直前の発言に必ず反応:"+trigger.sender+"「"+trigger.text+"」" : ""}
+直近の会話（最新20件）:${log}${triggerLine ? "\n直前の発言に必ず反応:"+trigger.sender+"「"+trigger.text+"」" : ""}
+
+【用語定義】
+- 確定黒：複数視点から人狼確定。優先的に吊る
+- 確定白：人狼でないと確定。基本疑わない
+- CO：役職宣言
+- 対抗：同じ役職を名乗る人物
+- グレー：白黒不明な人物
+- 吊り：投票による処刑
+- 噛み：人狼による夜の襲撃
 
 【共通ルール】
-- 勝利を最優先に行動する
+- これは会話ゲームではなく勝敗ゲーム。各陣営は勝利を最優先に行動する
+- 村人陣営は人狼排除を最優先。確定情報は感情より優先する
 - 正直に役職を明かす必要はない
 - 村人陣営でも状況によってブラフを使う
 - 人狼陣営は積極的に嘘をつく
-- 人狼ゲームの定石を理解した上で発言する
+- 確定黒は必ず吊り候補として発言に反映する
+- 確定白を疑う発言は不自然なのでしない
 - 自分が噛まれやすくなる行動は避ける
+- CO状況・占い結果・投票履歴を記憶して発言に活かす
+- 矛盾する発言をした人物を具体的に指摘する
 
 【NG行動（絶対禁止）】
 - 騎士が無意味にCOする
+- 霊媒師が処刑前に霊媒結果を報告する
 - 人狼同士が不自然に庇い続ける
 - 毎ターン完璧な推理をする
 - 狂人が明らかに狂人っぽく振る舞う
 - 感情が全くない機械的な発言をする
 - 同じ発言を繰り返す
+- 確定黒を無視して別の人物を吊ろうとする
 
 【発言形式】
 - ${speakerName}本人の発言のみ返す
@@ -214,7 +229,7 @@ function makePrompt(speaker, allPlayers, chatLog, day, trigger) {
   const mem = speaker.memory;
   const alive = allPlayers.filter(p => p.alive).map(p => p.name).join("、");
 
-  const log = chatLog.filter(m => m.type !== "gm").slice(-3)
+  const log = chatLog.filter(m => m.type !== "gm").slice(-20).slice(-20).slice(-3)
     .map(m => `${m.sender}:${m.text}`).join(" / ");
 
   const wolfInfo = isWolf && mem.wolfAllies?.length
