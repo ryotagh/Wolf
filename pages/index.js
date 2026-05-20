@@ -118,16 +118,27 @@ async function geminiMulti(speakers, allPlayers, chatLog, day, trigger) {
       ? `占い済み：${sp.memory.seerResults.map(r=>`${r.name}→${r.result}`).join("、")}` : "";
     const suspects = Object.entries(sp.memory?.suspects||{})
       .filter(([,v])=>v>=4).map(([n])=>n).join("、") || "特になし";
-    // 人狼・狂人が偽占い師COする確率（20%）
+    // 役職ごとのセオリー込みのroleDesc
     const fakeSeerCO = isWolf && !sp.memory?.claimedRole && Math.random() < 0.2;
     const roleDesc = fakeSeerCO
-      ? `人狼だが占い師を騙る。偽の占い結果をでっち上げてCOする。対象は生存者の中から選ぶ。人狼仲間以外の名前を使う。嘘の結果（村人でも人狼と言うか、人狼でも村人と言う）を発表する。`
-      : isWolf
-      ? `人狼（村人のふりをする。嘘をつく。仲間を守る${wolfInfo}）`
-      : sp.role === "SEER" ? `占い師（${seerResult || "まだ結果なし"}。適切なタイミングでCO）`
-      : sp.role === "MADMAN" ? `狂人（村人陣営を混乱させる。状況次第で偽占い師COも可）`
+      ? `人狼だが占い師騙りに出る。生存者の中から実在する名前で偽の占い結果をCOする。人狼仲間の名前は使わない。自信を持って断定的に話す。`
+      : sp.role === "WEREWOLF"
+      ? `人狼。${wolfInfo}。【戦略】村人として自然に振る舞う。仲間を露骨に庇わない。必要なら仲間切りも辞さない。真役職（占い師・騎士）を吊ることを目指す。疑われたら攻撃的に反論するより冷静に否定する。`
+      : sp.role === "SEER"
+      ? `占い師。${seerResult || "まだ占い結果なし"}。【戦略】黒結果が出たら即COを優先。白結果は状況次第でCOタイミングを調整。噛まれリスクを意識して行動する。占い理由を自然に説明する。`
+      : sp.role === "KNIGHT"
+      ? `騎士（狩人）。【戦略】絶対に潜伏する。COは吊られそうな時だけ。「私は騎士です」と軽率に言ってはいけない。村人のように自然に振る舞い、護衛対象を読む発言をする。`
+      : sp.role === "MEDIUM"
+      ? `霊媒師。【戦略】吊り結果を報告して村を導く。落ち着いて情報を整理する。ロラ覚悟で情報を出す場面もある。感情的にならず冷静に進行を補助する。`
+      : sp.role === "MADMAN"
+      ? `狂人（人狼が誰かわからない）。【戦略】村を混乱させて人狼を勝たせる。占い師や霊媒師を騙ることもある。黒特攻・偽結果も使う。ただしわざとらしくなりすぎない。常時テンション高くしない。`
+      : sp.role === "BAKER"
+      ? `パン屋。【戦略】ほぼ村人として動く。軽めのトーンで村目を取りに行く。あえて空気になって生存を狙う場面もある。`
+      : sp.role === "TRAITOR"
+      ? `裏切り者（人狼陣営・人狼が誰か知っている）。【戦略】人狼を守り村を混乱させる。真占いを潰す。断定的な偽情報を自然に混ぜる。仲間切りも辞さない。`
       : `${ROLES[sp.role]?.name}（人狼を探す）`;
-    return `・${sp.name}｜役割：${roleDesc}｜性格：${sp.personality}｜疑っている人：${suspects}`;
+    const mySaid = (sp.memory?.said||[]).slice(-5).join(' / ') || 'なし';
+    return `・${sp.name}｜役割：${roleDesc}｜性格：${sp.personality}｜疑っている人：${suspects}｜自分の過去発言：${mySaid}`;
   }).join("\n");
 
   const speakerNames = speakers.map(sp => sp.name);
@@ -150,15 +161,27 @@ async function geminiMulti(speakers, allPlayers, chatLog, day, trigger) {
   const prompt = `人狼ゲーム${day}日目。あなたは${speakerName}として発言する。
 役割:${speakerLines.replace(/^・[^｜]+｜/,"")}
 生存者:${alive}
-直近の会話:${log}${triggerLine ? "\n直前の発言に必ず反応:"+trigger.sender+"「"+trigger.text+"」" : ""}
-ルール:
+これまでの会話（全履歴）:${log}${triggerLine ? "\n直前の発言に必ず反応:"+trigger.sender+"「"+trigger.text+"」" : ""}
+
+【共通ルール】
+- 勝利を最優先に行動する
+- 正直に役職を明かす必要はない
+- 村人陣営でも状況によってブラフを使う
+- 人狼陣営は積極的に嘘をつく
+- 人狼ゲームの定石を理解した上で発言する
+- 自分が噛まれやすくなる行動は避ける
+
+【NG行動（絶対禁止）】
+- 騎士が無意味にCOする
+- 人狼同士が不自然に庇い続ける
+- 毎ターン完璧な推理をする
+- 狂人が明らかに狂人っぽく振る舞う
+- 感情が全くない機械的な発言をする
+- 同じ発言を繰り返す
+
+【発言形式】
 - ${speakerName}本人の発言のみ返す
 - 他のプレイヤーの名前:セリフ形式で返さない
-- 挨拶フェーズが終わったら積極的に心理戦をする
-- 相手の発言の矛盾・不自然な点を具体的に指摘する
-- 人狼なら巧みに話題をそらし、村人に疑いを向ける
-- 村人なら論理的に疑わしい人物を追い詰める
-- 感情・駆け引き・圧力・揺さぶりを使って心理戦をする
 - 30〜80文字の自然な日本語1文のみ
 - 記号・JSON・前置き・説明一切不要`;
 
