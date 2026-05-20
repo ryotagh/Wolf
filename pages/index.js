@@ -100,7 +100,7 @@ async function geminiMulti(speakers, allPlayers, chatLog, day, trigger) {
 
   const alive = allPlayers.filter(p => p.alive).map(p => p.name).join("、");
 
-  const log = chatLog.filter(m => m.type !== "gm").slice(-5)
+  const log = chatLog.filter(m => m.type !== "gm")
     .map(m => `${m.sender}：「${m.text}」`).join("\n") || "（まだなし）";
 
   const triggerLine = trigger ? `\n★直前の発言（必ず反応すること）：${trigger.sender}「${trigger.text}」` : "";
@@ -154,8 +154,11 @@ async function geminiMulti(speakers, allPlayers, chatLog, day, trigger) {
 ルール:
 - ${speakerName}本人の発言のみ返す
 - 他のプレイヤーの名前:セリフ形式で返さない
-- 挨拶フェーズが終わったら人狼を探す議論をする
-- 疑い・根拠・推理を積極的に話す
+- 挨拶フェーズが終わったら積極的に心理戦をする
+- 相手の発言の矛盾・不自然な点を具体的に指摘する
+- 人狼なら巧みに話題をそらし、村人に疑いを向ける
+- 村人なら論理的に疑わしい人物を追い詰める
+- 感情・駆け引き・圧力・揺さぶりを使って心理戦をする
 - 30〜80文字の自然な日本語1文のみ
 - 記号・JSON・前置き・説明一切不要`;
 
